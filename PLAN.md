@@ -34,6 +34,27 @@ without real diarization.
 Pipeline: tray **Start** → sidecar records two WAVs → **Stop** → whisper transcribes both
 → merge by timestamps (`Me`/`Them`) → Ollama distils → write meeting folder → notify.
 
+## Model selection
+
+Two models, two pickers. Selection lives in `settings.json` in the app data dir from
+the moment each pipeline stage exists; the Settings UI is sugar over that file.
+
+- **Transcription (whisper.cpp)** — curated list: `large-v3-turbo` q5 (default) ·
+  `small` (speed) · `large-v3` (max accuracy). Picking one downloads it on demand into
+  the app data dir; the picker shows what's already on disk.
+- **Distillation (Ollama)** — populated live from `ollama list`, with `*-cloud` tags
+  filtered out. Default = largest local model that fits a RAM heuristic. New options
+  appear by running `ollama pull <model>`; the picker just refreshes.
+
+Rollout: `settings.json` overrides work from M2 (whisper) / M3 (Ollama); the
+distillation dropdown ships with M3's library window; the full Settings pane (both
+pickers, persistence, download progress) is M4.
+
+Hardware reality check (this machine: M1, 8 GB RAM): whisper `large-v3-turbo` q5
+(~0.6 GB) is fine post-meeting; the LLM ceiling is ~4B-class — `qwen3.5:4b` (3.4 GB,
+256K context) is the quality pick, installed `qwen3.5:2b` works today. 8B+ models
+swap on 8 GB; `gemma4:e4b` (9.6 GB download) does not fit.
+
 ## Storage — files are the database
 
 ```
@@ -65,21 +86,27 @@ raw recordings are the most sensitive artifact and the least useful after transc
 - **M2 — Transcribe**: whisper-rs integration, model auto-download, merged Me/Them
   `transcript.md`. *Done when the M1 recording produces a readable transcript.*
 - **M3 — Distil**: Ollama client, distil prompt, `notes.md`; library shows meetings and
-  renders notes. *Done when meeting → notes works end-to-end without a terminal.*
-- **M4 — Polish**: settings (models, keep-audio), recording tray-icon state, done
-  notification, error surfaces, first-run onboarding.
+  renders notes, plus a simple distillation-model dropdown (reads `ollama list`).
+  *Done when meeting → notes works end-to-end without a terminal.*
+- **M4 — Polish**: full Settings pane (both model pickers, keep-audio), recording
+  tray-icon state, done notification, error surfaces, first-run onboarding.
+- **M5 — Calendar-aware prompts (v1.1)**: EventKit via the Swift helper. Reads the
+  macOS Calendar database — whatever accounts are already synced there (Google, iCloud,
+  Outlook) — so there is **no OAuth and nothing leaves the machine**; costs one
+  Calendar (Full Access) permission. Poll upcoming events; a "real meeting" has other
+  attendees or a video-conference link. ~2 min before start: notification + tray item
+  "Record: <meeting title>" — one click starts recording with the folder pre-named.
+  Meeting title + attendee names go into `meta.json` and into the distil prompt, which
+  sharpens action-item owner attribution.
 
 ## Non-goals (v1)
 
 Live/streaming transcription · true multi-speaker diarization (beyond Me/Them) ·
-calendar integration / meeting auto-detection · search · in-app note editing ·
-Windows/Linux · any cloud or sync.
+search · in-app note editing · Windows/Linux · any cloud or sync.
+(Calendar prompts graduated from this list to M5.)
 
 ## Open questions
 
-- **Local LLM default.** Only truly-local model installed today is `qwen3.5:2b` —
-  workable but weak for summarization. Recommend pulling a mid-size local model
-  (e.g. an 8B-class instruct model); distil should detect what's available and
-  suggest, never silently fall back to a `*-cloud` model.
 - Whisper model size vs. speed default — tune on real recordings in M2.
-- Auto-start recording when a meeting app produces audio — nice v2 candidate.
+- Auto-start recording when a meeting app produces audio (no calendar event needed) —
+  nice v2 candidate, complements M5.
