@@ -1,0 +1,109 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    sans-serif;
+  color-scheme: light dark;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: light-dark(#fafaf8, #1c1c1e);
+  color: light-dark(#1d1d1f, #f2f2f4);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1));
+}
+
+.titlebar h1 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.record {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: none;
+  border-radius: 99px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  color: light-dark(#1d1d1f, #f2f2f4);
+  background: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.1));
+  transition: background 0.15s ease;
+}
+
+.record:hover {
+  background: light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.16));
+}
+
+.record .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e0443e;
+}
+
+.record.recording {
+  background: light-dark(rgba(224, 68, 62, 0.12), rgba(224, 68, 62, 0.22));
+  color: light-dark(#c03530, #ff7b75);
+}
+
+.record.recording .dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.library {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.empty {
+  max-width: 300px;
+  text-align: center;
+}
+
+.empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.empty-hint {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: light-dark(rgba(0, 0, 0, 0.55), rgba(255, 255, 255, 0.55));
+}
