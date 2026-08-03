@@ -24,20 +24,9 @@ final class MicRecorder {
     func start() throws {
         let input = engine.inputNode
 
-        // Apple voice processing (AEC): subtracts speaker playback from the
-        // mic signal so meeting audio played on speakers doesn't bleed into
-        // the Me stream. Ducking is minimised so the system-audio stream keeps
-        // recording the meeting at full volume.
-        do {
-            try input.setVoiceProcessingEnabled(true)
-            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
-                enableAdvancedDucking: false, duckingLevel: .min)
-        } catch {
-            Emit.event([
-                "event": "warning",
-                "message": "voice processing unavailable, recording raw mic: \(error.localizedDescription)",
-            ])
-        }
+        // Do NOT enable setVoiceProcessingEnabled here: in this headless
+        // sidecar it produced an all-zero mic stream (macOS 26, 2026-08-03).
+        // Speaker bleed is handled by the merge-time filter instead.
 
         engine.prepare()
         let format = input.outputFormat(forBus: 0)

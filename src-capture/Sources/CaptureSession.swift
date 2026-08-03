@@ -73,6 +73,8 @@ final class CaptureSession {
                 "event": "stopped",
                 "micSeconds": micWriter.secondsWritten,
                 "systemSeconds": systemWriter.secondsWritten,
+                "micPeak": micWriter.peakAmplitude,
+                "systemPeak": systemWriter.peakAmplitude,
             ])
             exit(exitCode)
         }

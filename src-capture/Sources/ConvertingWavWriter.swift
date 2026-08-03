@@ -13,6 +13,9 @@ final class ConvertingWavWriter {
     private var converter: AVAudioConverter?
     private var sourceFormat: AVAudioFormat?
     private(set) var framesWritten: AVAudioFramePosition = 0
+    /// Loudest absolute sample written (0…32767). 0 after a whole recording
+    /// means the stream was dead — surfaced so silent captures can't hide.
+    private(set) var peakAmplitude: Int = 0
 
     init(url: URL) throws {
         file = try AVAudioFile(
@@ -83,6 +86,12 @@ final class ConvertingWavWriter {
 
     private func write(_ buffer: AVAudioPCMBuffer) {
         guard buffer.frameLength > 0, let file else { return }
+        if let channel = buffer.int16ChannelData?.pointee {
+            for i in 0..<Int(buffer.frameLength) {
+                let magnitude = Int(channel[i].magnitude)
+                if magnitude > peakAmplitude { peakAmplitude = magnitude }
+            }
+        }
         do {
             try file.write(from: buffer)
             framesWritten += AVAudioFramePosition(buffer.frameLength)

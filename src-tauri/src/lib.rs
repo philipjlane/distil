@@ -202,10 +202,41 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
     let result = (|| -> Result<(), String> {
         let settings = models::load_settings(app);
         let model = models::ensure_whisper_model(app)?;
-        let me = transcribe::transcribe(&model, &dir.join("audio-mic.wav"))?;
-        let them = transcribe::transcribe(&model, &dir.join("audio-system.wav"))?;
+
+        // A stream whose peak never left the noise floor is dead — skip it
+        // rather than let whisper hallucinate over silence.
+        const SILENCE_PEAK: i64 = 100;
+        let capture = std::fs::read(dir.join("meta.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|meta| meta.get("capture").cloned());
+        let peak_of = |key: &str| {
+            capture
+                .as_ref()
+                .and_then(|c| c.get(key))
+                .and_then(Value::as_i64)
+        };
+        let mic_silent = peak_of("micPeak").is_some_and(|p| p < SILENCE_PEAK);
+        let system_silent = peak_of("systemPeak").is_some_and(|p| p < SILENCE_PEAK);
+
+        let me = if mic_silent {
+            Vec::new()
+        } else {
+            transcribe::transcribe(&model, &dir.join("audio-mic.wav"))?
+        };
+        let them = if system_silent {
+            Vec::new()
+        } else {
+            transcribe::transcribe(&model, &dir.join("audio-system.wav"))?
+        };
         let me = transcribe::drop_mic_bleed(me, &them);
-        let transcript = transcribe::merge_transcript(me, them);
+        let mut transcript = transcribe::merge_transcript(me, them);
+        if mic_silent {
+            transcript.push_str("\n_Note: the microphone stream was silent for this recording._\n");
+        }
+        if system_silent {
+            transcript.push_str("\n_Note: the system-audio stream was silent for this recording._\n");
+        }
         std::fs::write(dir.join("transcript.md"), &transcript).map_err(|e| e.to_string())?;
 
         let meta_path = dir.join("meta.json");
