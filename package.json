@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:capture": "bash scripts/build-capture.sh",
     "preview": "vite preview",
     "tauri": "tauri"
   },
