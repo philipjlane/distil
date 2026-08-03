@@ -26,8 +26,8 @@ without real diarization.
 | Component | Choice | Notes |
 |---|---|---|
 | Shell | **Tauri 2** | Menu-bar (tray) app, `ActivationPolicy::Accessory` (no Dock icon). React + TS + Vite frontend for library/settings windows. |
-| Capture | **Swift sidecar** (`distil-capture`) | Bundled as a Tauri sidecar. ScreenCaptureKit audio-only stream for system audio; AVAudioEngine for mic. Emits 16 kHz mono WAV per stream. Needs mic + screen/system-audio recording permissions (TCC). Isolates all Apple-API complexity into a few hundred lines of Swift. |
-| Transcription | **whisper.cpp** via whisper-rs (Metal) | Default model: quantized `large-v3-turbo` (~1.6 GB), auto-downloaded on first run into app data dir. Post-meeting transcription in v1, not live. |
+| Capture | **Swift sidecar** (`distil-capture`) | Bundled as a Tauri sidecar. ScreenCaptureKit audio-only stream for system audio; AVAudioEngine for mic **with Apple voice processing (AEC)** so speaker playback doesn't bleed into the Me stream (headphones give perfect separation regardless). Emits 16 kHz mono WAV per stream. Needs mic + screen/system-audio recording permissions (TCC). |
+| Transcription | **whisper.cpp** via whisper-rs (Metal) | Default model: quantized `large-v3-turbo` (~574 MB), auto-downloaded on first run into app data dir. Post-meeting transcription in v1, not live. Merge-time bleed filter drops mic segments whose text duplicates time-overlapping system segments (backstop for speakers-without-headphones), and whisper noise annotations (`*music*`, `[Applause]`) are stripped. |
 | Distillation | **Ollama** over localhost HTTP | Local models **only** — `*-cloud` Ollama models are excluded; they'd silently break the privacy promise. Runtime picks the best locally-installed model; configurable. Structured prompt → TL;DR, key points, decisions, action items (owner + due date when stated), open questions. |
 | Orchestration | Rust state machine | `idle → recording → transcribing → distilling → done/error`; progress pushed to UI via Tauri events. |
 

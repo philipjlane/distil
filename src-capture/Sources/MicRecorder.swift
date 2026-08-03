@@ -23,6 +23,23 @@ final class MicRecorder {
 
     func start() throws {
         let input = engine.inputNode
+
+        // Apple voice processing (AEC): subtracts speaker playback from the
+        // mic signal so meeting audio played on speakers doesn't bleed into
+        // the Me stream. Ducking is minimised so the system-audio stream keeps
+        // recording the meeting at full volume.
+        do {
+            try input.setVoiceProcessingEnabled(true)
+            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
+                enableAdvancedDucking: false, duckingLevel: .min)
+        } catch {
+            Emit.event([
+                "event": "warning",
+                "message": "voice processing unavailable, recording raw mic: \(error.localizedDescription)",
+            ])
+        }
+
+        engine.prepare()
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw CaptureError.message("microphone reports an invalid format")
@@ -30,7 +47,6 @@ final class MicRecorder {
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [writer] buffer, _ in
             writer.append(buffer)
         }
-        engine.prepare()
         try engine.start()
     }
 

@@ -204,6 +204,7 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
         let model = models::ensure_whisper_model(app)?;
         let me = transcribe::transcribe(&model, &dir.join("audio-mic.wav"))?;
         let them = transcribe::transcribe(&model, &dir.join("audio-system.wav"))?;
+        let me = transcribe::drop_mic_bleed(me, &them);
         let transcript = transcribe::merge_transcript(me, them);
         std::fs::write(dir.join("transcript.md"), &transcript).map_err(|e| e.to_string())?;
 
