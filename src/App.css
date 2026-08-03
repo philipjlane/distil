@@ -91,6 +91,11 @@ body {
   color: light-dark(#a4302b, #ff8d88);
 }
 
+.banner.progress {
+  background: light-dark(rgba(0, 105, 220, 0.1), rgba(80, 160, 255, 0.16));
+  color: light-dark(#0a5dc2, #8ec2ff);
+}
+
 .banner.saved {
   background: light-dark(rgba(52, 168, 83, 0.12), rgba(52, 168, 83, 0.2));
   color: light-dark(#1e7737, #7fd694);

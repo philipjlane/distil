@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+pub mod models;
+pub mod transcribe;
+
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde_json::Value;
@@ -20,6 +23,7 @@ enum UiState {
     Idle { last_meeting: Option<String> },
     Recording { dir: String },
     Stopping,
+    Transcribing { dir: String },
     Error { message: String },
 }
 
@@ -66,6 +70,7 @@ fn emit_state<R: Runtime>(app: &AppHandle<R>, state: UiState) {
         }
         let tooltip = match state {
             UiState::Recording { .. } => "Distil — recording",
+            UiState::Transcribing { .. } => "Distil — transcribing",
             _ => "Distil",
         };
         let _ = tray.set_tooltip(Some(tooltip));
@@ -160,8 +165,13 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>) {
                         );
                         emit_state(
                             &app,
-                            UiState::Idle { last_meeting: Some(dir.display().to_string()) },
+                            UiState::Transcribing { dir: dir.display().to_string() },
                         );
+                        let app = app.clone();
+                        let dir = dir.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            run_transcription(&app, &dir);
+                        });
                     } else {
                         // Nothing usable was captured; don't leave an empty husk.
                         let _ = std::fs::remove_dir_all(&dir);
@@ -180,6 +190,69 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>) {
             }
         }
     });
+}
+
+/// Serialises transcription jobs so only one whisper model is ever resident —
+/// 8 GB machines are a design target.
+static TRANSCRIBE_GATE: Mutex<()> = Mutex::new(());
+
+fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
+    let _gate = TRANSCRIBE_GATE.lock().unwrap();
+
+    let result = (|| -> Result<(), String> {
+        let settings = models::load_settings(app);
+        let model = models::ensure_whisper_model(app)?;
+        let me = transcribe::transcribe(&model, &dir.join("audio-mic.wav"))?;
+        let them = transcribe::transcribe(&model, &dir.join("audio-system.wav"))?;
+        let transcript = transcribe::merge_transcript(me, them);
+        std::fs::write(dir.join("transcript.md"), &transcript).map_err(|e| e.to_string())?;
+
+        let meta_path = dir.join("meta.json");
+        if let Ok(bytes) = std::fs::read(&meta_path) {
+            if let Ok(mut meta) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                meta["whisperModel"] = serde_json::Value::from(settings.whisper_model.clone());
+                meta["transcribedAt"] =
+                    serde_json::Value::from(chrono::Local::now().to_rfc3339());
+                let _ = std::fs::write(
+                    &meta_path,
+                    serde_json::to_vec_pretty(&meta).unwrap_or_default(),
+                );
+            }
+        }
+
+        if !settings.keep_audio {
+            let _ = std::fs::remove_file(dir.join("audio-mic.wav"));
+            let _ = std::fs::remove_file(dir.join("audio-system.wav"));
+        }
+        Ok(())
+    })();
+
+    // Don't clobber the UI if a new recording started while we transcribed.
+    let owns_ui = {
+        let state = app.state::<Mutex<AppState>>();
+        let guard = state.lock().unwrap();
+        matches!(&guard.last_state, UiState::Transcribing { dir: d } if *d == dir.display().to_string())
+    };
+
+    match result {
+        Ok(()) => {
+            let _ = app.emit("meeting-ready", dir.display().to_string());
+            if owns_ui {
+                emit_state(
+                    app,
+                    UiState::Idle { last_meeting: Some(dir.display().to_string()) },
+                );
+            }
+        }
+        Err(message) => {
+            let message = format!("{message} — audio kept in {}", dir.display());
+            if owns_ui {
+                emit_state(app, UiState::Error { message });
+            } else {
+                eprintln!("transcription failed: {message}");
+            }
+        }
+    }
 }
 
 fn stop_recording<R: Runtime>(app: &AppHandle<R>) {

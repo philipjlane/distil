@@ -7,7 +7,13 @@ type UiState =
   | { phase: "idle"; last_meeting: string | null }
   | { phase: "recording"; dir: string }
   | { phase: "stopping" }
+  | { phase: "transcribing"; dir: string }
   | { phase: "error"; message: string };
+
+type ModelDownload = {
+  status: "started" | "progress" | "done" | "failed";
+  percent?: number;
+};
 
 function basename(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
@@ -18,13 +24,19 @@ function App() {
   const [elapsed, setElapsed] = useState(0);
   const timer = useRef<number | undefined>(undefined);
 
+  const [download, setDownload] = useState<ModelDownload | null>(null);
+
   useEffect(() => {
     invoke<UiState>("current_state").then(setState);
-    const unlisten = listen<UiState>("pipeline-state", (event) => {
+    const unlistenState = listen<UiState>("pipeline-state", (event) => {
       setState(event.payload);
     });
+    const unlistenDownload = listen<ModelDownload>("model-download", (event) => {
+      setDownload(event.payload.status === "done" ? null : event.payload);
+    });
     return () => {
-      unlisten.then((stop) => stop());
+      unlistenState.then((stop) => stop());
+      unlistenDownload.then((stop) => stop());
     };
   }, []);
 
@@ -59,19 +71,34 @@ function App() {
       {state.phase === "error" && (
         <div className="banner error">{state.message}</div>
       )}
+      {state.phase === "transcribing" && (
+        <div className="banner progress">
+          {download?.status === "started" || download?.status === "progress"
+            ? `Downloading whisper model… ${download.percent ?? 0}%`
+            : `Transcribing · ${basename(state.dir)}`}
+        </div>
+      )}
       {state.phase === "idle" && state.last_meeting && (
-        <div className="banner saved">Saved · {basename(state.last_meeting)}</div>
+        <div className="banner saved">
+          Transcribed · {basename(state.last_meeting)}
+        </div>
       )}
 
       <section className="library">
         <div className="empty">
           <p className="empty-title">
-            {recording ? "Recording…" : "No meetings yet"}
+            {recording
+              ? "Recording…"
+              : state.phase === "transcribing"
+                ? "Processing meeting…"
+                : "No meetings yet"}
           </p>
           <p className="empty-hint">
             {recording
               ? "Capturing your mic and system audio. Stop here or from the menu bar when the meeting ends."
-              : "Start a recording from the menu bar when your next meeting begins. Distil will transcribe it and distil the notes here."}
+              : state.phase === "transcribing"
+                ? "Transcribing locally with whisper. The transcript lands in the meeting folder when done."
+                : "Start a recording from the menu bar when your next meeting begins. Distil will transcribe it and distil the notes here."}
           </p>
         </div>
       </section>
