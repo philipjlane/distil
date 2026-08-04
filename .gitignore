@@ -26,3 +26,4 @@ dist-ssr
 # Build artifacts
 src-capture/.build
 src-tauri/binaries
+/transcript.md
