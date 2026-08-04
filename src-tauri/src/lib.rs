@@ -270,7 +270,14 @@ fn distil_core<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> Result<(), String>
         .map_err(|e| format!("cannot read transcript: {e}"))?;
     let settings = models::load_settings(app);
     let model = match settings.ollama_model.clone() {
-        Some(model) => model,
+        Some(model) => {
+            if model.ends_with("-cloud") && !settings.allow_cloud_models {
+                return Err(format!(
+                    "{model} is a cloud model but cloud models are disabled — enable them in Settings or pick a local model"
+                ));
+            }
+            model
+        }
         None => ollama::auto_pick(&settings.ollama_url)?,
     };
     let notes = ollama::generate(
@@ -694,15 +701,33 @@ fn distil_meeting(app: AppHandle, dir: String) -> Result<(), String> {
 struct OllamaModelInfo {
     name: String,
     parameter_size: Option<f64>,
+    is_cloud: bool,
 }
 
 #[tauri::command]
 fn list_ollama_models(app: AppHandle) -> Result<Vec<OllamaModelInfo>, String> {
     let settings = models::load_settings(&app);
-    Ok(ollama::list_local_models(&settings.ollama_url)?
-        .into_iter()
-        .map(|m| OllamaModelInfo { name: m.name, parameter_size: m.parameter_size })
-        .collect())
+    Ok(
+        ollama::list_models(&settings.ollama_url, settings.allow_cloud_models)?
+            .into_iter()
+            .map(|m| OllamaModelInfo {
+                name: m.name,
+                parameter_size: m.parameter_size,
+                is_cloud: m.is_cloud,
+            })
+            .collect(),
+    )
+}
+
+#[tauri::command]
+fn set_allow_cloud_models(app: AppHandle, allow: bool) -> Result<(), String> {
+    let mut settings = models::load_settings(&app);
+    settings.allow_cloud_models = allow;
+    // Disabling the opt-in must also drop any cloud model still selected.
+    if !allow && settings.ollama_model.as_deref().is_some_and(|m| m.ends_with("-cloud")) {
+        settings.ollama_model = None;
+    }
+    models::save_settings(&app, &settings)
 }
 
 #[tauri::command]
@@ -833,6 +858,7 @@ pub fn run() {
             list_ollama_models,
             get_settings,
             set_ollama_model,
+            set_allow_cloud_models,
             list_whisper_models,
             set_whisper_model,
             set_keep_audio,

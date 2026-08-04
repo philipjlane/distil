@@ -72,9 +72,18 @@ greppable, syncable, and readable in Obsidian or anything else forever.
 
 ## Privacy stance
 
-Fully local. No telemetry, no accounts, no network calls except localhost Ollama and
-the one-time whisper model download (Hugging Face). "Keep audio" is **off** by default —
-raw recordings are the most sensitive artifact and the least useful after transcription.
+Local by default, and local means local: no telemetry, no accounts, no network calls
+except localhost Ollama and the one-time whisper model download (Hugging Face).
+"Keep audio" is **off** by default — raw recordings are the most sensitive artifact
+and the least useful after transcription.
+
+One deliberate exception, added at Phil's request (Aug 2026): **cloud Ollama models
+as explicit opt-in**. Off by default; enabling the toggle in Settings surfaces
+`*-cloud` models badged CLOUD in the picker with consent copy stating that
+transcripts sent to them leave the Mac (Ollama's stated policy: transient
+processing, zero retention, no training). Cloud models are **never auto-picked** —
+auto mode always resolves to the largest local model. Choosing cloud is always a
+per-model, user-made decision.
 
 ## Milestones
 

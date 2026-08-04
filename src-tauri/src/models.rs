@@ -20,6 +20,10 @@ pub struct Settings {
     pub ollama_url: String,
     /// Distillation model. None = auto-pick the largest local model.
     pub ollama_model: Option<String>,
+    /// Explicit opt-in: surface `*-cloud` Ollama models in the picker.
+    /// Transcripts sent to them leave the Mac (Ollama states zero retention).
+    /// Cloud models are NEVER auto-picked, only chosen deliberately.
+    pub allow_cloud_models: bool,
 }
 
 impl Default for Settings {
@@ -29,6 +33,7 @@ impl Default for Settings {
             keep_audio: false,
             ollama_url: "http://localhost:11434".into(),
             ollama_model: None,
+            allow_cloud_models: false,
         }
     }
 }

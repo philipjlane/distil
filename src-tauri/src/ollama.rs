@@ -4,12 +4,13 @@ pub struct OllamaModel {
     pub name: String,
     /// Billions of parameters, parsed from Ollama's "parameter_size" ("2.7B", "780M").
     pub parameter_size: Option<f64>,
+    /// `*-cloud` tags run on Ollama's servers — transcripts sent to them leave
+    /// the Mac. Surfaced only behind the explicit allow_cloud_models opt-in,
+    /// and never auto-picked.
+    pub is_cloud: bool,
 }
 
-/// Local models only — `*-cloud` tags run on Ollama's servers and would
-/// silently break distil's privacy promise, so they are filtered out here
-/// and must never be reintroduced.
-pub fn list_local_models(base_url: &str) -> Result<Vec<OllamaModel>, String> {
+pub fn list_models(base_url: &str, include_cloud: bool) -> Result<Vec<OllamaModel>, String> {
     #[derive(Deserialize)]
     struct Tags {
         #[serde(default)]
@@ -34,29 +35,34 @@ pub fn list_local_models(base_url: &str) -> Result<Vec<OllamaModel>, String> {
     Ok(tags
         .models
         .into_iter()
-        .filter(|m| !m.name.ends_with("-cloud"))
         .map(|m| OllamaModel {
             parameter_size: m.details.parameter_size.as_deref().and_then(parse_parameter_size),
+            is_cloud: m.name.ends_with("-cloud"),
             name: m.name,
         })
+        .filter(|m| include_cloud || !m.is_cloud)
         .collect())
 }
 
-/// Largest local model wins. On an 8 GB machine that is what the user
-/// deliberately pulled; distil never second-guesses toward cloud.
-pub fn auto_pick(base_url: &str) -> Result<String, String> {
-    let models = list_local_models(base_url)?;
+/// Largest LOCAL model wins — auto-pick must never reach for a cloud model,
+/// regardless of the opt-in; cloud use is always a deliberate user choice.
+pub fn pick_largest_local(models: &[OllamaModel]) -> Option<String> {
     models
-        .into_iter()
+        .iter()
+        .filter(|m| !m.is_cloud)
         .max_by(|a, b| {
             a.parameter_size
                 .unwrap_or(0.0)
                 .total_cmp(&b.parameter_size.unwrap_or(0.0))
         })
-        .map(|m| m.name)
-        .ok_or_else(|| {
-            "no local Ollama models found — run e.g. `ollama pull qwen3.5:4b` first".to_string()
-        })
+        .map(|m| m.name.clone())
+}
+
+pub fn auto_pick(base_url: &str) -> Result<String, String> {
+    let models = list_models(base_url, true)?;
+    pick_largest_local(&models).ok_or_else(|| {
+        "no local Ollama models found — run e.g. `ollama pull qwen3.5:4b` first".to_string()
+    })
 }
 
 pub fn generate(base_url: &str, model: &str, prompt: &str) -> Result<String, String> {
@@ -172,6 +178,25 @@ fn parse_parameter_size(size: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_pick_never_chooses_cloud() {
+        let models = vec![
+            OllamaModel { name: "qwen3.5:2b".into(), parameter_size: Some(2.7), is_cloud: false },
+            OllamaModel {
+                name: "deepseek-v3.1:671b-cloud".into(),
+                parameter_size: Some(671.0),
+                is_cloud: true,
+            },
+        ];
+        assert_eq!(pick_largest_local(&models), Some("qwen3.5:2b".into()));
+        let cloud_only = vec![OllamaModel {
+            name: "gpt-oss:20b-cloud".into(),
+            parameter_size: Some(20.0),
+            is_cloud: true,
+        }];
+        assert_eq!(pick_largest_local(&cloud_only), None);
+    }
 
     #[test]
     fn parameter_sizes_parse() {

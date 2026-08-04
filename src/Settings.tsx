@@ -9,13 +9,14 @@ type WhisperModel = {
   selected: boolean;
 };
 
-type OllamaModel = { name: string; parameterSize: number | null };
+type OllamaModel = { name: string; parameterSize: number | null; isCloud: boolean };
 
 type Settings = {
   whisperModel: string;
   keepAudio: boolean;
   ollamaUrl: string;
   ollamaModel: string | null;
+  allowCloudModels: boolean;
 };
 
 type Permissions = { microphone: string; screenRecording: string; calendar?: string };
@@ -25,11 +26,13 @@ export function SettingsPane({
   ollamaModels,
   ollamaError,
   onSettingsChange,
+  onReloadModels,
 }: {
   settings: Settings;
   ollamaModels: OllamaModel[];
   ollamaError: boolean;
   onSettingsChange: (next: Settings) => void;
+  onReloadModels: () => void;
 }) {
   const [whisperModels, setWhisperModels] = useState<WhisperModel[]>([]);
   const [permissions, setPermissions] = useState<Permissions | null>(null);
@@ -100,11 +103,44 @@ export function SettingsPane({
             {ollamaModels.map((m) => (
               <option key={m.name} value={m.name}>
                 {m.name}
-                {m.parameterSize ? ` · ${m.parameterSize}B` : ""}
+                {m.isCloud
+                  ? " · CLOUD"
+                  : m.parameterSize
+                    ? ` · ${m.parameterSize}B`
+                    : ""}
               </option>
             ))}
           </select>
         )}
+        <label className="check-row cloud-optin">
+          <input
+            type="checkbox"
+            checked={settings.allowCloudModels}
+            onChange={(event) => {
+              const allow = event.target.checked;
+              invoke("set_allow_cloud_models", { allow })
+                .then(() => onReloadModels())
+                .catch(() => {});
+              onSettingsChange({
+                ...settings,
+                allowCloudModels: allow,
+                ollamaModel:
+                  !allow && settings.ollamaModel?.endsWith("-cloud")
+                    ? null
+                    : settings.ollamaModel,
+              });
+            }}
+          />
+          <span>
+            Allow cloud Ollama models
+            <em className="radio-desc">
+              Models badged CLOUD run on Ollama's servers — transcripts you
+              distil with them leave this Mac. Ollama states zero retention and
+              no training. Cloud models are never chosen automatically; picking
+              one is always your explicit choice per the dropdown above.
+            </em>
+          </span>
+        </label>
       </section>
 
       <section>

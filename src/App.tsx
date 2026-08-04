@@ -28,13 +28,14 @@ type Meeting = {
 
 type MeetingDoc = { notes: string | null; transcript: string | null };
 
-type OllamaModel = { name: string; parameterSize: number | null };
+type OllamaModel = { name: string; parameterSize: number | null; isCloud: boolean };
 
 type Settings = {
   whisperModel: string;
   keepAudio: boolean;
   ollamaUrl: string;
   ollamaModel: string | null;
+  allowCloudModels: boolean;
 };
 
 type UpcomingMeeting = { title: string; startsAtDisplay: string } | null;
@@ -80,9 +81,7 @@ function App() {
       .catch(() => setDoc(null));
   }, []);
 
-  useEffect(() => {
-    invoke<UiState>("current_state").then(setState);
-    invoke<Settings>("get_settings").then(setSettings).catch(() => {});
+  const loadModels = useCallback(() => {
     invoke<OllamaModel[]>("list_ollama_models")
       .then((list) => {
         setModels(list);
@@ -92,6 +91,12 @@ function App() {
         setModels([]);
         setModelsError(true);
       });
+  }, []);
+
+  useEffect(() => {
+    invoke<UiState>("current_state").then(setState);
+    invoke<Settings>("get_settings").then(setSettings).catch(() => {});
+    loadModels();
     refreshMeetings();
 
     const subscriptions = [
@@ -197,6 +202,7 @@ function App() {
           ollamaModels={models}
           ollamaError={modelsError}
           onSettingsChange={setSettings}
+          onReloadModels={loadModels}
         />
       )}
 
