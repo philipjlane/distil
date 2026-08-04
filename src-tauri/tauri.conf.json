@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "Distil",
-        "width": 440,
-        "height": 620,
-        "minWidth": 360,
-        "minHeight": 480,
+        "width": 720,
+        "height": 560,
+        "minWidth": 560,
+        "minHeight": 420,
         "visible": false
       }
     ],

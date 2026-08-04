@@ -16,6 +16,10 @@ pub struct Settings {
     /// Keep raw WAVs after transcription. Defaults to true while the pipeline
     /// is young; M4 flips the release default to false.
     pub keep_audio: bool,
+    /// Ollama endpoint; localhost keeps everything on-device.
+    pub ollama_url: String,
+    /// Distillation model. None = auto-pick the largest local model.
+    pub ollama_model: Option<String>,
 }
 
 impl Default for Settings {
@@ -23,8 +27,23 @@ impl Default for Settings {
         Self {
             whisper_model: "large-v3-turbo-q5_0".into(),
             keep_audio: true,
+            ollama_url: "http://localhost:11434".into(),
+            ollama_model: None,
         }
     }
+}
+
+pub fn save_settings<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("cannot resolve app data dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(
+        dir.join("settings.json"),
+        serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub fn load_settings<R: Runtime>(app: &AppHandle<R>) -> Settings {

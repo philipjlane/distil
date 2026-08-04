@@ -1,4 +1,5 @@
 pub mod models;
+pub mod ollama;
 pub mod transcribe;
 
 use std::path::{Path, PathBuf};
@@ -24,6 +25,7 @@ enum UiState {
     Recording { dir: String },
     Stopping,
     Transcribing { dir: String },
+    Distilling { dir: String },
     Error { message: String },
 }
 
@@ -71,6 +73,7 @@ fn emit_state<R: Runtime>(app: &AppHandle<R>, state: UiState) {
         let tooltip = match state {
             UiState::Recording { .. } => "Distil — recording",
             UiState::Transcribing { .. } => "Distil — transcribing",
+            UiState::Distilling { .. } => "Distil — distilling",
             _ => "Distil",
         };
         let _ = tray.set_tooltip(Some(tooltip));
@@ -192,12 +195,56 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-/// Serialises transcription jobs so only one whisper model is ever resident —
-/// 8 GB machines are a design target.
-static TRANSCRIBE_GATE: Mutex<()> = Mutex::new(());
+/// Serialises heavy pipeline jobs (whisper, Ollama) so only one model is ever
+/// resident — 8 GB machines are a design target.
+static PIPELINE_GATE: Mutex<()> = Mutex::new(());
+
+fn pipeline_owns_ui<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> bool {
+    let state = app.state::<Mutex<AppState>>();
+    let guard = state.lock().unwrap();
+    let dir = dir.display().to_string();
+    matches!(
+        &guard.last_state,
+        UiState::Transcribing { dir: d } | UiState::Distilling { dir: d } if *d == dir
+    )
+}
+
+/// Transcript → notes.md via the configured (or best local) Ollama model.
+/// Blocking; call while holding PIPELINE_GATE.
+fn distil_core<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> Result<(), String> {
+    let transcript = std::fs::read_to_string(dir.join("transcript.md"))
+        .map_err(|e| format!("cannot read transcript: {e}"))?;
+    let settings = models::load_settings(app);
+    let model = match settings.ollama_model.clone() {
+        Some(model) => model,
+        None => ollama::auto_pick(&settings.ollama_url)?,
+    };
+    let notes = ollama::generate(
+        &settings.ollama_url,
+        &model,
+        &ollama::build_notes_prompt(&transcript),
+    )?;
+    if notes.is_empty() {
+        return Err(format!("{model} returned empty notes"));
+    }
+    std::fs::write(dir.join("notes.md"), format!("{notes}\n")).map_err(|e| e.to_string())?;
+
+    let meta_path = dir.join("meta.json");
+    if let Ok(bytes) = std::fs::read(&meta_path) {
+        if let Ok(mut meta) = serde_json::from_slice::<Value>(&bytes) {
+            meta["ollamaModel"] = Value::from(model);
+            meta["distilledAt"] = Value::from(chrono::Local::now().to_rfc3339());
+            let _ = std::fs::write(
+                &meta_path,
+                serde_json::to_vec_pretty(&meta).unwrap_or_default(),
+            );
+        }
+    }
+    Ok(())
+}
 
 fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
-    let _gate = TRANSCRIBE_GATE.lock().unwrap();
+    let _gate = PIPELINE_GATE.lock().unwrap();
 
     let result = (|| -> Result<(), String> {
         let settings = models::load_settings(app);
@@ -259,26 +306,38 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
         Ok(())
     })();
 
-    // Don't clobber the UI if a new recording started while we transcribed.
-    let owns_ui = {
-        let state = app.state::<Mutex<AppState>>();
-        let guard = state.lock().unwrap();
-        matches!(&guard.last_state, UiState::Transcribing { dir: d } if *d == dir.display().to_string())
-    };
-
     match result {
         Ok(()) => {
+            // Transcript is on disk — let the library refresh, then distil.
             let _ = app.emit("meeting-ready", dir.display().to_string());
-            if owns_ui {
-                emit_state(
-                    app,
-                    UiState::Idle { last_meeting: Some(dir.display().to_string()) },
-                );
+            if pipeline_owns_ui(app, dir) {
+                emit_state(app, UiState::Distilling { dir: dir.display().to_string() });
+            }
+            match distil_core(app, dir) {
+                Ok(()) => {
+                    let _ = app.emit("meeting-ready", dir.display().to_string());
+                    if pipeline_owns_ui(app, dir) {
+                        emit_state(
+                            app,
+                            UiState::Idle { last_meeting: Some(dir.display().to_string()) },
+                        );
+                    }
+                }
+                Err(message) => {
+                    let message = format!(
+                        "notes failed: {message} — the transcript is saved; use Generate notes to retry"
+                    );
+                    if pipeline_owns_ui(app, dir) {
+                        emit_state(app, UiState::Error { message });
+                    } else {
+                        eprintln!("{message}");
+                    }
+                }
             }
         }
         Err(message) => {
             let message = format!("{message} — audio kept in {}", dir.display());
-            if owns_ui {
+            if pipeline_owns_ui(app, dir) {
                 emit_state(app, UiState::Error { message });
             } else {
                 eprintln!("transcription failed: {message}");
@@ -334,13 +393,154 @@ fn toggle_recording(app: AppHandle) {
     toggle_recording_impl(&app);
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MeetingSummary {
+    dir: String,
+    name: String,
+    started_at: Option<String>,
+    has_notes: bool,
+    has_transcript: bool,
+}
+
+#[tauri::command]
+fn list_meetings(app: AppHandle) -> Result<Vec<MeetingSummary>, String> {
+    let root = meetings_root(&app)?;
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Ok(Vec::new()); // nothing recorded yet
+    };
+    let mut meetings: Vec<MeetingSummary> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .map(|path| MeetingSummary {
+            name: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            started_at: std::fs::read(path.join("meta.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|meta| {
+                    meta.get("startedAt").and_then(Value::as_str).map(String::from)
+                }),
+            has_notes: path.join("notes.md").exists(),
+            has_transcript: path.join("transcript.md").exists(),
+            dir: path.display().to_string(),
+        })
+        .collect();
+    meetings.sort_by(|a, b| b.started_at.cmp(&a.started_at).then(b.name.cmp(&a.name)));
+    Ok(meetings)
+}
+
+/// Webview-supplied paths are only trusted once proven to live inside the
+/// meetings root.
+fn validated_meeting_dir<R: Runtime>(app: &AppHandle<R>, dir: &str) -> Result<PathBuf, String> {
+    let root = meetings_root(app)?
+        .canonicalize()
+        .map_err(|e| format!("meetings folder missing: {e}"))?;
+    let path = PathBuf::from(dir)
+        .canonicalize()
+        .map_err(|e| format!("no such meeting: {e}"))?;
+    if !path.starts_with(&root) || !path.is_dir() {
+        return Err("not a distil meeting folder".into());
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+fn read_meeting(app: AppHandle, dir: String) -> Result<Value, String> {
+    let path = validated_meeting_dir(&app, &dir)?;
+    let read = |name: &str| std::fs::read_to_string(path.join(name)).ok();
+    Ok(serde_json::json!({
+        "notes": read("notes.md"),
+        "transcript": read("transcript.md"),
+        "meta": std::fs::read(path.join("meta.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()),
+    }))
+}
+
+#[tauri::command]
+fn distil_meeting(app: AppHandle, dir: String) -> Result<(), String> {
+    let path = validated_meeting_dir(&app, &dir)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _gate = PIPELINE_GATE.lock().unwrap();
+        let can_own_ui = {
+            let state = app.state::<Mutex<AppState>>();
+            let guard = state.lock().unwrap();
+            matches!(guard.last_state, UiState::Idle { .. } | UiState::Error { .. })
+        };
+        if can_own_ui {
+            emit_state(&app, UiState::Distilling { dir: path.display().to_string() });
+        }
+        match distil_core(&app, &path) {
+            Ok(()) => {
+                let _ = app.emit("meeting-ready", path.display().to_string());
+                if pipeline_owns_ui(&app, &path) {
+                    emit_state(
+                        &app,
+                        UiState::Idle { last_meeting: Some(path.display().to_string()) },
+                    );
+                }
+            }
+            Err(message) => {
+                let message = format!("notes failed: {message}");
+                if pipeline_owns_ui(&app, &path) {
+                    emit_state(&app, UiState::Error { message });
+                } else {
+                    eprintln!("{message}");
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaModelInfo {
+    name: String,
+    parameter_size: Option<f64>,
+}
+
+#[tauri::command]
+fn list_ollama_models(app: AppHandle) -> Result<Vec<OllamaModelInfo>, String> {
+    let settings = models::load_settings(&app);
+    Ok(ollama::list_local_models(&settings.ollama_url)?
+        .into_iter()
+        .map(|m| OllamaModelInfo { name: m.name, parameter_size: m.parameter_size })
+        .collect())
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle) -> models::Settings {
+    models::load_settings(&app)
+}
+
+#[tauri::command]
+fn set_ollama_model(app: AppHandle, model: Option<String>) -> Result<(), String> {
+    let mut settings = models::load_settings(&app);
+    settings.ollama_model = model.filter(|m| !m.is_empty());
+    models::save_settings(&app, &settings)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Mutex::new(AppState::default()))
-        .invoke_handler(tauri::generate_handler![current_state, toggle_recording])
+        .invoke_handler(tauri::generate_handler![
+            current_state,
+            toggle_recording,
+            list_meetings,
+            read_meeting,
+            distil_meeting,
+            list_ollama_models,
+            get_settings,
+            set_ollama_model
+        ])
         .setup(|app| {
             // Menu-bar app: no Dock icon, lives in the tray.
             #[cfg(target_os = "macos")]
