@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { marked } from "marked";
+import { SettingsPane } from "./Settings";
 import "./App.css";
 
 type UiState =
@@ -48,7 +49,9 @@ function App() {
   const [doc, setDoc] = useState<MeetingDoc | null>(null);
   const [view, setView] = useState<"notes" | "transcript">("notes");
   const [models, setModels] = useState<OllamaModel[]>([]);
+  const [modelsError, setModelsError] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const timer = useRef<number | undefined>(undefined);
   const selectedRef = useRef<string | null>(null);
@@ -77,7 +80,15 @@ function App() {
   useEffect(() => {
     invoke<UiState>("current_state").then(setState);
     invoke<Settings>("get_settings").then(setSettings).catch(() => {});
-    invoke<OllamaModel[]>("list_ollama_models").then(setModels).catch(() => setModels([]));
+    invoke<OllamaModel[]>("list_ollama_models")
+      .then((list) => {
+        setModels(list);
+        setModelsError(false);
+      })
+      .catch(() => {
+        setModels([]);
+        setModelsError(true);
+      });
     refreshMeetings();
 
     const subscriptions = [
@@ -143,19 +154,37 @@ function App() {
     <main className="app">
       <header className="titlebar">
         <h1>Distil</h1>
-        <button
-          className={recording ? "record recording" : "record"}
-          disabled={stopping}
-          onClick={() => invoke("toggle_recording")}
-        >
-          <span className="dot" aria-hidden />
-          {recording ? `Stop · ${mmss}` : stopping ? "Stopping…" : "Start recording"}
-        </button>
+        <div className="titlebar-actions">
+          <button
+            className={recording ? "record recording" : "record"}
+            disabled={stopping}
+            onClick={() => invoke("toggle_recording")}
+          >
+            <span className="dot" aria-hidden />
+            {recording ? `Stop · ${mmss}` : stopping ? "Stopping…" : "Start recording"}
+          </button>
+          <button
+            className={showSettings ? "gear active" : "gear"}
+            title="Settings"
+            onClick={() => setShowSettings((s) => !s)}
+          >
+            ⚙
+          </button>
+        </div>
       </header>
 
       {banner}
 
-      <div className="body">
+      {showSettings && settings && (
+        <SettingsPane
+          settings={settings}
+          ollamaModels={models}
+          ollamaError={modelsError}
+          onSettingsChange={setSettings}
+        />
+      )}
+
+      <div className="body" style={showSettings ? { display: "none" } : undefined}>
         <aside className="sidebar">
           {meetings.length === 0 && <p className="sidebar-empty">No meetings yet</p>}
           {meetings.map((m) => (
@@ -233,26 +262,13 @@ function App() {
       </div>
 
       <footer className="statusbar">
-        <label>
-          Distil with
-          <select
-            value={settings?.ollamaModel ?? ""}
-            onChange={(event) => {
-              const model = event.target.value || null;
-              setSettings((s) => (s ? { ...s, ollamaModel: model } : s));
-              invoke("set_ollama_model", { model }).catch(() => {});
-            }}
-          >
-            <option value="">Auto (largest local model)</option>
-            {models.map((m) => (
-              <option key={m.name} value={m.name}>
-                {m.name}
-                {m.parameterSize ? ` · ${m.parameterSize}B` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="whisper-label">whisper · {settings?.whisperModel ?? "…"}</span>
+        <span className="whisper-label">
+          whisper · {settings?.whisperModel ?? "…"} &nbsp;·&nbsp; notes ·{" "}
+          {settings?.ollamaModel ?? "auto"}
+        </span>
+        <button className="statusbar-link" onClick={() => setShowSettings(true)}>
+          Settings
+        </button>
       </footer>
     </main>
   );

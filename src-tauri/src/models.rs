@@ -13,8 +13,8 @@ pub struct Settings {
     /// whisper.cpp model name as published in ggerganov/whisper.cpp on
     /// Hugging Face, without the "ggml-" prefix or ".bin" suffix.
     pub whisper_model: String,
-    /// Keep raw WAVs after transcription. Defaults to true while the pipeline
-    /// is young; M4 flips the release default to false.
+    /// Keep raw WAVs after transcription. Off by default — raw recordings are
+    /// the most sensitive artifact and the least useful once transcribed.
     pub keep_audio: bool,
     /// Ollama endpoint; localhost keeps everything on-device.
     pub ollama_url: String,
@@ -26,7 +26,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             whisper_model: "large-v3-turbo-q5_0".into(),
-            keep_audio: true,
+            keep_audio: false,
             ollama_url: "http://localhost:11434".into(),
             ollama_model: None,
         }

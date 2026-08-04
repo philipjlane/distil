@@ -77,9 +77,27 @@ fn emit_state<R: Runtime>(app: &AppHandle<R>, state: UiState) {
             _ => "Distil",
         };
         let _ = tray.set_tooltip(Some(tooltip));
+        // Menu-bar text beside the icon: recording / working indicator.
+        let title = match state {
+            UiState::Recording { .. } => Some("●"),
+            UiState::Transcribing { .. } | UiState::Distilling { .. } => Some("⋯"),
+            _ => None,
+        };
+        let _ = tray.set_title(title);
     }
 
     let _ = app.emit("pipeline-state", &state);
+}
+
+fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
+fn meeting_label(dir: &Path) -> String {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.display().to_string())
 }
 
 fn meetings_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
@@ -316,6 +334,7 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
             match distil_core(app, dir) {
                 Ok(()) => {
                     let _ = app.emit("meeting-ready", dir.display().to_string());
+                    notify(app, "Notes ready", &meeting_label(dir));
                     if pipeline_owns_ui(app, dir) {
                         emit_state(
                             app,
@@ -327,6 +346,7 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
                     let message = format!(
                         "notes failed: {message} — the transcript is saved; use Generate notes to retry"
                     );
+                    notify(app, "Distil — notes failed", &meeting_label(dir));
                     if pipeline_owns_ui(app, dir) {
                         emit_state(app, UiState::Error { message });
                     } else {
@@ -337,6 +357,7 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
         }
         Err(message) => {
             let message = format!("{message} — audio kept in {}", dir.display());
+            notify(app, "Distil — transcription failed", &meeting_label(dir));
             if pipeline_owns_ui(app, dir) {
                 emit_state(app, UiState::Error { message });
             } else {
@@ -344,6 +365,31 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
             }
         }
     }
+}
+
+/// Quit without ever orphaning a recording: ask the sidecar to stop, give it a
+/// moment to finalise the WAVs and for the reader task to write meta.json,
+/// then exit. (A capture interrupted this way keeps its audio; transcription
+/// can be re-run via Generate notes once a transcript exists — see PLAN M4.)
+fn quit_app<R: Runtime>(app: &AppHandle<R>) {
+    let recording = app.state::<Mutex<AppState>>().lock().unwrap().session.is_some();
+    if !recording {
+        app.exit(0);
+        return;
+    }
+    stop_recording(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        for _ in 0..40 {
+            if app.state::<Mutex<AppState>>().lock().unwrap().session.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Grace period: session clears just before meta.json is written.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        app.exit(0);
+    });
 }
 
 fn stop_recording<R: Runtime>(app: &AppHandle<R>) {
@@ -477,6 +523,7 @@ fn distil_meeting(app: AppHandle, dir: String) -> Result<(), String> {
         match distil_core(&app, &path) {
             Ok(()) => {
                 let _ = app.emit("meeting-ready", path.display().to_string());
+                notify(&app, "Notes ready", &meeting_label(&path));
                 if pipeline_owns_ui(&app, &path) {
                     emit_state(
                         &app,
@@ -525,11 +572,106 @@ fn set_ollama_model(app: AppHandle, model: Option<String>) -> Result<(), String>
     models::save_settings(&app, &settings)
 }
 
+/// Curated whisper choices — name in ggerganov/whisper.cpp, blurb, size on disk.
+const WHISPER_MODELS: &[(&str, &str, u64)] = &[
+    ("large-v3-turbo-q5_0", "Best balance of accuracy and speed (default)", 574),
+    ("large-v3-q5_0", "Maximum accuracy, slower", 1_081),
+    ("small", "Faster, lighter accuracy", 466),
+    ("tiny.en-q8_0", "Fastest, English-only — for quick tests", 43),
+];
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhisperModelInfo {
+    name: String,
+    description: String,
+    size_mb: u64,
+    downloaded: bool,
+    selected: bool,
+}
+
+#[tauri::command]
+fn list_whisper_models(app: AppHandle) -> Result<Vec<WhisperModelInfo>, String> {
+    let settings = models::load_settings(&app);
+    let models_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("models");
+    Ok(WHISPER_MODELS
+        .iter()
+        .map(|(name, description, size_mb)| WhisperModelInfo {
+            name: (*name).to_string(),
+            description: (*description).to_string(),
+            size_mb: *size_mb,
+            downloaded: models_dir.join(format!("ggml-{name}.bin")).exists(),
+            selected: settings.whisper_model == *name,
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn set_whisper_model(app: AppHandle, model: String) -> Result<(), String> {
+    if !WHISPER_MODELS.iter().any(|(name, ..)| *name == model) {
+        return Err("unknown whisper model".into());
+    }
+    let mut settings = models::load_settings(&app);
+    settings.whisper_model = model;
+    models::save_settings(&app, &settings)
+}
+
+#[tauri::command]
+fn set_keep_audio(app: AppHandle, keep: bool) -> Result<(), String> {
+    let mut settings = models::load_settings(&app);
+    settings.keep_audio = keep;
+    models::save_settings(&app, &settings)
+}
+
+#[tauri::command]
+async fn permissions_status(app: AppHandle) -> Result<Value, String> {
+    let output = app
+        .shell()
+        .sidecar("distil-capture")
+        .map_err(|e| e.to_string())?
+        .args(["--check-permissions"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|v| v.get("event").and_then(Value::as_str) == Some("permissions"))
+        .ok_or_else(|| "capture helper produced no permissions report".to_string())
+}
+
+const PRIVACY_PANES: &[(&str, &str)] = &[
+    (
+        "microphone",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+    ),
+    (
+        "screen",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+    ),
+];
+
+#[tauri::command]
+fn open_privacy_settings(pane: String) -> Result<(), String> {
+    let url = PRIVACY_PANES
+        .iter()
+        .find(|(key, _)| *key == pane)
+        .map(|(_, url)| *url)
+        .ok_or("unknown settings pane")?;
+    tauri_plugin_opener::open_url(url, None::<String>).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
             current_state,
@@ -539,7 +681,12 @@ pub fn run() {
             distil_meeting,
             list_ollama_models,
             get_settings,
-            set_ollama_model
+            set_ollama_model,
+            list_whisper_models,
+            set_whisper_model,
+            set_keep_audio,
+            permissions_status,
+            open_privacy_settings
         ])
         .setup(|app| {
             // Menu-bar app: no Dock icon, lives in the tray.
@@ -557,11 +704,7 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "toggle-recording" => toggle_recording_impl(app),
                     "open-library" => show_library(app),
-                    "quit" => {
-                        // Never orphan a running capture.
-                        stop_recording(app);
-                        app.exit(0);
-                    }
+                    "quit" => quit_app(app),
                     _ => {}
                 })
                 .build(app)?;
