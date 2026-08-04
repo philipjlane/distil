@@ -1,0 +1,5 @@
+# Route cmake through the ARM-probe shim — see scripts/cmake-m1-shim.sh for
+# the story. Remove if ggml switches to compile-only feature detection or the
+# macOS illegal-instruction trap behaviour is fixed.
+[env]
+CMAKE = { value = "scripts/cmake-m1-shim.sh", relative = true }

@@ -88,6 +88,7 @@ type Settings = {
   ollamaUrl: string;
   ollamaModel: string | null;
   allowCloudModels: boolean;
+  diarizeSpeakers: boolean;
 };
 
 type UpcomingMeeting = { title: string; startsAtDisplay: string } | null;

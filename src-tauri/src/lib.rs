@@ -1,4 +1,5 @@
 pub mod calendar;
+pub mod diarize;
 pub mod models;
 pub mod ollama;
 pub mod transcribe;
@@ -35,6 +36,8 @@ enum UiState {
 struct UpcomingMeeting {
     title: String,
     starts_at_display: String,
+    #[serde(skip)]
+    attendees: Vec<String>,
 }
 
 struct AppState {
@@ -142,7 +145,7 @@ fn meetings_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(docs.join("Distil"))
 }
 
-fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>) {
+fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>, attendees: Vec<String>) {
     if app.state::<Mutex<AppState>>().lock().unwrap().session.is_some() {
         return;
     }
@@ -214,6 +217,7 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>) {
                             "startedAt": started_at.to_rfc3339(),
                             "stoppedAt": chrono::Local::now().to_rfc3339(),
                             "capture": summary,
+                            "attendees": attendees,
                             "appVersion": env!("CARGO_PKG_VERSION"),
                         });
                         let _ = std::fs::write(
@@ -280,6 +284,23 @@ fn distil_core<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> Result<(), String>
         }
         None => ollama::auto_pick(&settings.ollama_url)?,
     };
+    // Attendee names (when the recording came from a calendar prompt) give the
+    // name-inference instruction its candidate set.
+    let attendees: Vec<String> = std::fs::read(dir.join("meta.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|meta| meta.get("attendees").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let transcript = if attendees.is_empty() {
+        transcript
+    } else {
+        format!(
+            "Known attendees (from the calendar invite): {}.\n\n{transcript}",
+            attendees.join(", ")
+        )
+    };
+
     let (template, _) = models::load_notes_prompt(app);
     let notes = ollama::generate(
         &settings.ollama_url,
@@ -339,7 +360,35 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
             transcribe::transcribe(&model, &dir.join("audio-system.wav"))?
         };
         let me = transcribe::drop_mic_bleed(me, &them);
-        let mut transcript = transcribe::merge_transcript(me, them);
+
+        // Optional speaker fidelity: cluster the system stream into Them 1..N.
+        // Diarization failure must never sink the pipeline — fall back to "Them".
+        let them_labeled: Vec<(String, transcribe::Segment)> =
+            if settings.diarize_speakers && !system_silent && !them.is_empty() {
+                let diarized = models::ensure_diarization_models(app).and_then(
+                    |(segmentation, embedding)| {
+                        diarize::diarize_wav(
+                            &segmentation,
+                            &embedding,
+                            &dir.join("audio-system.wav"),
+                        )
+                    },
+                );
+                match diarized {
+                    Ok(spans) => diarize::label_them_segments(them, &spans),
+                    Err(message) => {
+                        eprintln!("diarization skipped: {message}");
+                        them.into_iter().map(|s| ("Them".to_string(), s)).collect()
+                    }
+                }
+            } else {
+                them.into_iter().map(|s| ("Them".to_string(), s)).collect()
+            };
+
+        let mut labeled: Vec<(String, transcribe::Segment)> =
+            me.into_iter().map(|s| ("Me".to_string(), s)).collect();
+        labeled.extend(them_labeled);
+        let mut transcript = transcribe::merge_labeled(labeled);
         if mic_silent {
             transcript.push_str("\n_Note: the microphone stream was silent for this recording._\n");
         }
@@ -462,20 +511,22 @@ fn toggle_recording_impl<R: Runtime>(app: &AppHandle<R>) {
     if recording {
         stop_recording(app);
     } else {
-        start_recording(app, None);
+        start_recording(app, None, Vec::new());
     }
 }
 
 /// Start recording the meeting the calendar watcher surfaced.
 fn record_upcoming_impl<R: Runtime>(app: &AppHandle<R>) {
-    let title = app
+    let upcoming = app
         .state::<Mutex<AppState>>()
         .lock()
         .unwrap()
         .upcoming
-        .as_ref()
-        .map(|m| m.title.clone());
-    start_recording(app, title.as_deref());
+        .clone();
+    match upcoming {
+        Some(meeting) => start_recording(app, Some(&meeting.title), meeting.attendees),
+        None => start_recording(app, None, Vec::new()),
+    }
 }
 
 const CALENDAR_POLL_SECS: u64 = 60;
@@ -528,6 +579,7 @@ fn poll_calendar<R: Runtime>(app: &AppHandle<R>) {
     let upcoming = candidate.map(|(event, starts, _)| UpcomingMeeting {
         title: event.title.clone(),
         starts_at_display: starts.with_timezone(&chrono::Local).format("%H:%M").to_string(),
+        attendees: event.attendees.clone(),
     });
 
     let (changed, should_notify, current_state) = {
@@ -857,6 +909,13 @@ fn set_keep_audio(app: AppHandle, keep: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_diarize_speakers(app: AppHandle, enable: bool) -> Result<(), String> {
+    let mut settings = models::load_settings(&app);
+    settings.diarize_speakers = enable;
+    models::save_settings(&app, &settings)
+}
+
+#[tauri::command]
 async fn permissions_status(app: AppHandle) -> Result<Value, String> {
     let output = app
         .shell()
@@ -972,6 +1031,7 @@ pub fn run() {
             list_whisper_models,
             set_whisper_model,
             set_keep_audio,
+            set_diarize_speakers,
             permissions_status,
             open_privacy_settings,
             get_autostart,

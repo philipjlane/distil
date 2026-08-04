@@ -179,12 +179,9 @@ fn mmss(ms: i64) -> String {
     format!("{:02}:{:02}", total_seconds / 60, total_seconds % 60)
 }
 
-/// Interleave the two single-speaker transcripts by start time and coalesce
-/// consecutive segments from the same speaker into one block.
-pub fn merge_transcript(me: Vec<Segment>, them: Vec<Segment>) -> String {
-    let mut all: Vec<(&'static str, Segment)> = Vec::with_capacity(me.len() + them.len());
-    all.extend(me.into_iter().map(|s| ("Me", s)));
-    all.extend(them.into_iter().map(|s| ("Them", s)));
+/// Interleave labeled segments by start time and coalesce consecutive
+/// segments with the same label into one block.
+pub fn merge_labeled(mut all: Vec<(String, Segment)>) -> String {
     all.sort_by_key(|(_, s)| s.start_ms);
 
     let mut out = String::from("# Transcript\n");
@@ -194,7 +191,7 @@ pub fn merge_transcript(me: Vec<Segment>, them: Vec<Segment>) -> String {
     }
     let mut current_speaker = "";
     for (speaker, segment) in &all {
-        if *speaker != current_speaker {
+        if speaker != current_speaker {
             current_speaker = speaker;
             out.push_str(&format!("\n**{}** [{}]\n", speaker, mmss(segment.start_ms)));
         }
@@ -202,6 +199,14 @@ pub fn merge_transcript(me: Vec<Segment>, them: Vec<Segment>) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Two-label convenience used when diarization is off (or found one voice).
+pub fn merge_transcript(me: Vec<Segment>, them: Vec<Segment>) -> String {
+    let mut all: Vec<(String, Segment)> = Vec::with_capacity(me.len() + them.len());
+    all.extend(me.into_iter().map(|s| ("Me".to_string(), s)));
+    all.extend(them.into_iter().map(|s| ("Them".to_string(), s)));
+    merge_labeled(all)
 }
 
 #[cfg(test)]

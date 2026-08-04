@@ -10,6 +10,8 @@ pub struct CalendarEvent {
     #[serde(default)]
     pub attendee_count: i64,
     #[serde(default)]
+    pub attendees: Vec<String>,
+    #[serde(default)]
     pub video_link: Option<String>,
 }
 
@@ -42,6 +44,7 @@ mod tests {
             starts_at: "2026-08-04T14:00:00Z".into(),
             is_all_day: all_day,
             attendee_count: attendees,
+            attendees: Vec::new(),
             video_link: link.map(String::from),
         }
     }

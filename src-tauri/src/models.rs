@@ -24,6 +24,8 @@ pub struct Settings {
     /// Transcripts sent to them leave the Mac (Ollama states zero retention).
     /// Cloud models are NEVER auto-picked, only chosen deliberately.
     pub allow_cloud_models: bool,
+    /// Cluster distinct voices in the system stream into Them 1..N.
+    pub diarize_speakers: bool,
 }
 
 impl Default for Settings {
@@ -34,6 +36,7 @@ impl Default for Settings {
             ollama_url: "http://localhost:11434".into(),
             ollama_model: None,
             allow_cloud_models: false,
+            diarize_speakers: true,
         }
     }
 }
@@ -108,17 +111,35 @@ pub fn load_settings<R: Runtime>(app: &AppHandle<R>) -> Settings {
 pub fn download_model(
     models_dir: &Path,
     model_name: &str,
-    mut on_progress: impl FnMut(u64, Option<u64>),
+    on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<PathBuf, String> {
-    fs::create_dir_all(models_dir).map_err(|e| e.to_string())?;
     let file_name = format!("ggml-{model_name}.bin");
-    let target = models_dir.join(&file_name);
-    if target.exists() {
-        return Ok(target);
-    }
-
     let url = format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{file_name}");
-    let mut response = ureq::get(&url)
+    let target = models_dir.join(&file_name);
+    download_file(&url, &target, on_progress)?;
+    Ok(target)
+}
+
+/// Download an arbitrary file to `target` (atomically, via a .part file),
+/// reporting (received, total). No-op if `target` already exists. Blocking.
+pub fn download_file(
+    url: &str,
+    target: &Path,
+    mut on_progress: impl FnMut(u64, Option<u64>),
+) -> Result<(), String> {
+    if target.exists() {
+        return Ok(());
+    }
+    let models_dir = target
+        .parent()
+        .ok_or("download target has no parent directory")?;
+    fs::create_dir_all(models_dir).map_err(|e| e.to_string())?;
+    let file_name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let mut response = ureq::get(url)
         .call()
         .map_err(|e| format!("model download failed ({file_name}): {e}"))?;
     let total = response
@@ -153,8 +174,58 @@ pub fn download_model(
             ));
         }
     }
-    fs::rename(&part, &target).map_err(|e| e.to_string())?;
-    Ok(target)
+    fs::rename(&part, target).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Paths to the diarization models, downloading on first use.
+/// Blocking; emits `model-download` events like the whisper path.
+pub fn ensure_diarization_models<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(PathBuf, PathBuf), String> {
+    let models_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("cannot resolve app data dir: {e}"))?
+        .join("models");
+
+    let fetch = |(file_name, url): (&str, &str)| -> Result<PathBuf, String> {
+        let target = models_dir.join(file_name);
+        let missing = !target.exists();
+        if missing {
+            let _ = app.emit(
+                "model-download",
+                serde_json::json!({ "status": "started", "model": file_name }),
+            );
+        }
+        let mut last_percent = -1i64;
+        let result = download_file(url, &target, |received, total| {
+            if let Some(total) = total {
+                let percent = (received * 100 / total.max(1)) as i64;
+                if percent != last_percent {
+                    last_percent = percent;
+                    let _ = app.emit(
+                        "model-download",
+                        serde_json::json!({
+                            "status": "progress",
+                            "receivedBytes": received,
+                            "totalBytes": total,
+                            "percent": percent,
+                        }),
+                    );
+                }
+            }
+        });
+        if missing {
+            let status = if result.is_ok() { "done" } else { "failed" };
+            let _ = app.emit("model-download", serde_json::json!({ "status": status }));
+        }
+        result.map(|()| target)
+    };
+
+    let segmentation = fetch(crate::diarize::SEGMENTATION_MODEL)?;
+    let embedding = fetch(crate::diarize::EMBEDDING_MODEL)?;
+    Ok((segmentation, embedding))
 }
 
 /// Path to the configured whisper model, downloading it on first use.
@@ -178,7 +249,7 @@ pub fn ensure_whisper_model<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, S
     }
 
     let mut last_percent = -1i64;
-    let result = download_model(&models_dir, &settings.whisper_model, |received, total| {
+    let result = download_model(&models_dir, &settings.whisper_model, |received, total: Option<u64>| {
         if let Some(total) = total {
             let percent = (received * 100 / total.max(1)) as i64;
             if percent != last_percent {

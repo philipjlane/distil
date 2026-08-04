@@ -29,6 +29,7 @@ enum CalendarReporter {
                 "endsAt": formatter.string(from: event.endDate),
                 "isAllDay": event.isAllDay,
                 "attendeeCount": event.attendees?.count ?? 0,
+                "attendees": event.attendees?.compactMap { $0.name } ?? [String](),
                 "videoLink": firstVideoLink(in: haystack) as Any,
             ]
         }

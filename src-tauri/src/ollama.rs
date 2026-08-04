@@ -156,6 +156,15 @@ the owner for the user's own items.
 ## Open questions
 Bullets.
 
+If the transcript distinguishes numbered speakers (Them 1, Them 2, …), map them
+to real names only on strong in-transcript evidence: a self-introduction, or a
+name used in direct address immediately followed by that speaker responding —
+ideally corroborated more than once. A \"Known attendees\" line, when present, is
+the candidate set. People who are merely talked about are not speakers. Use
+inferred names in the notes and end with a line like
+\"Speakers: Them 1 = Sarah (inferred) · Them 2 = unidentified\". When unsure,
+keep the number — an accurate \"Them 2\" beats a wrong name.
+
 Rules: use only information from the transcript — no invention. Be specific.
 Keep the whole thing under 300 words. Output only the Markdown notes.
 

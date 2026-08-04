@@ -17,6 +17,7 @@ type Settings = {
   ollamaUrl: string;
   ollamaModel: string | null;
   allowCloudModels: boolean;
+  diarizeSpeakers: boolean;
 };
 
 type Permissions = { microphone: string; screenRecording: string; calendar?: string };
@@ -102,6 +103,25 @@ export function SettingsPane({
             </span>
           </label>
         ))}
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={settings.diarizeSpeakers}
+            onChange={(event) => {
+              const enable = event.target.checked;
+              invoke("set_diarize_speakers", { enable }).catch(() => {});
+              onSettingsChange({ ...settings, diarizeSpeakers: enable });
+            }}
+          />
+          <span>
+            Identify multiple speakers
+            <em className="radio-desc">
+              Clusters distinct voices in the remote audio into Them 1 / Them 2 /
+              … and lets the distiller infer names from the call. First use
+              downloads ~45 MB of local diarization models. Adds processing time.
+            </em>
+          </span>
+        </label>
       </section>
 
       <section>
