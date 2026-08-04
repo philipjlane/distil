@@ -7,14 +7,25 @@
 # build`). Presetting the probe results skips the runs entirely.
 # dotprod is genuinely supported on M1; i8mm/sve/sme are not.
 set -euo pipefail
-REAL_CMAKE="${DISTIL_REAL_CMAKE:-/opt/homebrew/bin/cmake}"
+REAL_CMAKE="${DISTIL_REAL_CMAKE:-$(command -v /opt/homebrew/bin/cmake || command -v cmake)}"
 for arg in "$@"; do
   case "$arg" in
     --build|--install|--version|-E|-P) exec "$REAL_CMAKE" "$@" ;;
   esac
 done
-exec "$REAL_CMAKE" "$@" \
-  -DGGML_MACHINE_SUPPORTS_dotprod=1 \
-  -DGGML_MACHINE_SUPPORTS_i8mm=0 \
-  -DGGML_MACHINE_SUPPORTS_sve=0 \
-  -DGGML_MACHINE_SUPPORTS_sme=0
+
+# The presets below are correct for the M1 family only (no i8mm/sve/sme).
+# M2+ chips have i8mm — let the probes run there so the feature stays on.
+CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)
+case "$CHIP" in
+  *"Apple M1"*)
+    exec "$REAL_CMAKE" "$@" \
+      -DGGML_MACHINE_SUPPORTS_dotprod=1 \
+      -DGGML_MACHINE_SUPPORTS_i8mm=0 \
+      -DGGML_MACHINE_SUPPORTS_sve=0 \
+      -DGGML_MACHINE_SUPPORTS_sme=0
+    ;;
+  *)
+    exec "$REAL_CMAKE" "$@"
+    ;;
+esac
