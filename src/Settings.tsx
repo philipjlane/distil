@@ -21,6 +21,8 @@ type Settings = {
 
 type Permissions = { microphone: string; screenRecording: string; calendar?: string };
 
+type NotesPrompt = { text: string; isCustom: boolean; defaultText: string };
+
 export function SettingsPane({
   settings,
   ollamaModels,
@@ -36,6 +38,10 @@ export function SettingsPane({
 }) {
   const [whisperModels, setWhisperModels] = useState<WhisperModel[]>([]);
   const [permissions, setPermissions] = useState<Permissions | null>(null);
+  const [autostart, setAutostart] = useState(false);
+  const [prompt, setPrompt] = useState<NotesPrompt | null>(null);
+  const [promptDraft, setPromptDraft] = useState("");
+  const [promptSaved, setPromptSaved] = useState(false);
 
   const refreshPermissions = useCallback(() => {
     invoke<Permissions>("permissions_status")
@@ -47,8 +53,26 @@ export function SettingsPane({
     invoke<WhisperModel[]>("list_whisper_models")
       .then(setWhisperModels)
       .catch(() => {});
+    invoke<boolean>("get_autostart").then(setAutostart).catch(() => {});
+    invoke<NotesPrompt>("get_notes_prompt")
+      .then((p) => {
+        setPrompt(p);
+        setPromptDraft(p.text);
+      })
+      .catch(() => {});
     refreshPermissions();
   }, [refreshPermissions, settings.whisperModel]);
+
+  const applyPrompt = (text: string) => {
+    invoke<NotesPrompt>("set_notes_prompt", { text })
+      .then((p) => {
+        setPrompt(p);
+        setPromptDraft(p.text);
+        setPromptSaved(true);
+        window.setTimeout(() => setPromptSaved(false), 1500);
+      })
+      .catch(() => {});
+  };
 
   const granted = (status: string | undefined) => status === "granted";
 
@@ -159,6 +183,58 @@ export function SettingsPane({
             <em className="radio-desc">
               Off by default — raw recordings are the most sensitive artifact.
               Meetings live in ~/Documents/Distil as plain Markdown.
+            </em>
+          </span>
+        </label>
+      </section>
+
+      <section>
+        <h3>Notes prompt</h3>
+        <p className="section-hint">
+          The instruction sent to the model when distilling notes. Remove sections
+          you don't want, add your own, change the tone. <code>{"{transcript}"}</code>{" "}
+          marks where the transcript goes; without it, the transcript is appended at
+          the end. Clearing the text restores the default.
+        </p>
+        <textarea
+          className="prompt-editor"
+          rows={12}
+          spellCheck={false}
+          value={promptDraft}
+          onChange={(event) => setPromptDraft(event.target.value)}
+        />
+        <div className="prompt-actions">
+          <button
+            className="perm-refresh"
+            disabled={prompt !== null && promptDraft === prompt.text}
+            onClick={() => applyPrompt(promptDraft)}
+          >
+            {promptSaved ? "Saved ✓" : "Save prompt"}
+          </button>
+          {prompt?.isCustom && (
+            <button className="perm-refresh" onClick={() => applyPrompt("")}>
+              Reset to default
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section>
+        <h3>Launch</h3>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={autostart}
+            onChange={(event) => {
+              const enable = event.target.checked;
+              setAutostart(enable);
+              invoke("set_autostart", { enable }).catch(() => setAutostart(!enable));
+            }}
+          />
+          <span>
+            Start Distil at login
+            <em className="radio-desc">
+              Distil lives in the menu bar, ready to record when meetings start.
             </em>
           </span>
         </label>

@@ -130,38 +130,49 @@ pub fn elide_middle(transcript: &str, max_chars: usize) -> String {
     )
 }
 
-pub fn build_notes_prompt(transcript: &str) -> String {
+/// The built-in notes prompt. Users can override it (Settings → Notes prompt /
+/// notes-prompt.md in the app data dir); `{transcript}` marks where the
+/// transcript is substituted.
+pub const DEFAULT_NOTES_PROMPT: &str = "\
+You are Distil. Turn this raw meeting transcript into crisp meeting notes.
+In the transcript, \"Me\" is the user's own voice and \"Them\" is everyone else.
+
+Write GitHub-flavoured Markdown with exactly these sections, omitting any
+section that has nothing grounded in the transcript:
+
+## TL;DR
+Two or three sentences.
+
+## Key points
+Bullet list.
+
+## Decisions
+Bullets for decisions actually made in the meeting.
+
+## Action items
+Task-list lines like \"- [ ] Owner: task (due date if stated)\". Use \"Me\" as
+the owner for the user's own items.
+
+## Open questions
+Bullets.
+
+Rules: use only information from the transcript — no invention. Be specific.
+Keep the whole thing under 300 words. Output only the Markdown notes.
+
+Transcript:
+
+{transcript}";
+
+/// Fill a prompt template with the (length-capped) transcript. Templates
+/// without a `{transcript}` placeholder get it appended at the end, so a
+/// user's stripped-down custom prompt still works.
+pub fn build_notes_prompt(template: &str, transcript: &str) -> String {
     let transcript = elide_middle(transcript, 45_000);
-    format!(
-        "You are Distil. Turn this raw meeting transcript into crisp meeting notes.\n\
-         In the transcript, \"Me\" is the user's own voice and \"Them\" is everyone else.\n\
-         \n\
-         Write GitHub-flavoured Markdown with exactly these sections, omitting any\n\
-         section that has nothing grounded in the transcript:\n\
-         \n\
-         ## TL;DR\n\
-         Two or three sentences.\n\
-         \n\
-         ## Key points\n\
-         Bullet list.\n\
-         \n\
-         ## Decisions\n\
-         Bullets for decisions actually made in the meeting.\n\
-         \n\
-         ## Action items\n\
-         Task-list lines like \"- [ ] Owner: task (due date if stated)\". Use \"Me\" as\n\
-         the owner for the user's own items.\n\
-         \n\
-         ## Open questions\n\
-         Bullets.\n\
-         \n\
-         Rules: use only information from the transcript — no invention. Be specific.\n\
-         Keep the whole thing under 300 words. Output only the Markdown notes.\n\
-         \n\
-         Transcript:\n\
-         \n\
-         {transcript}"
-    )
+    if template.contains("{transcript}") {
+        template.replace("{transcript}", &transcript)
+    } else {
+        format!("{template}\n\nTranscript:\n\n{transcript}")
+    }
 }
 
 fn parse_parameter_size(size: &str) -> Option<f64> {
@@ -237,8 +248,22 @@ mod tests {
 
     #[test]
     fn prompt_embeds_transcript() {
-        let prompt = build_notes_prompt("**Me** [00:00]\nHello there.");
+        let prompt = build_notes_prompt(DEFAULT_NOTES_PROMPT, "**Me** [00:00]\nHello there.");
         assert!(prompt.contains("Hello there."));
         assert!(prompt.contains("## Action items"));
+        assert!(!prompt.contains("{transcript}"));
+    }
+
+    #[test]
+    fn custom_prompt_without_placeholder_gets_transcript_appended() {
+        let prompt = build_notes_prompt("Summarise in one paragraph.", "Hello world.");
+        assert!(prompt.starts_with("Summarise in one paragraph."));
+        assert!(prompt.contains("Transcript:\n\nHello world."));
+    }
+
+    #[test]
+    fn custom_prompt_with_placeholder_controls_position() {
+        let prompt = build_notes_prompt("Before\n{transcript}\nAfter", "MIDDLE");
+        assert_eq!(prompt, "Before\nMIDDLE\nAfter");
     }
 }

@@ -38,6 +38,37 @@ impl Default for Settings {
     }
 }
 
+fn notes_prompt_path<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("cannot resolve app data dir: {e}"))?
+        .join("notes-prompt.md"))
+}
+
+/// Returns (template, is_custom). Missing or blank file → built-in default.
+pub fn load_notes_prompt<R: Runtime>(app: &AppHandle<R>) -> (String, bool) {
+    match notes_prompt_path(app).map(std::fs::read_to_string) {
+        Ok(Ok(text)) if !text.trim().is_empty() => (text, true),
+        _ => (crate::ollama::DEFAULT_NOTES_PROMPT.to_string(), false),
+    }
+}
+
+/// Blank text resets to the built-in default (removes the override file).
+pub fn save_notes_prompt<R: Runtime>(app: &AppHandle<R>, text: &str) -> Result<(), String> {
+    let path = notes_prompt_path(app)?;
+    if text.trim().is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, text).map_err(|e| e.to_string())
+}
+
 pub fn save_settings<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Result<(), String> {
     let dir = app
         .path()

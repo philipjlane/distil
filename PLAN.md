@@ -107,6 +107,24 @@ per-model, user-made decision.
   "Record: <meeting title>" — one click starts recording with the folder pre-named.
   Meeting title + attendee names go into `meta.json` and into the distil prompt, which
   sharpens action-item owner attribution.
+- **M6 — Multi-speaker fidelity (v1.2)**: split "Them" into individual speakers.
+  The system stream arrives pre-mixed, so this is diarization: sherpa-onnx
+  (segmentation + speaker-embedding models, ~50–100 MB, auto-downloaded, CPU-friendly)
+  clusters the system stream into `Them 1..N` time ranges, intersected with whisper
+  segments at merge time. A distil-time LLM pass then maps numbered speakers to real
+  names — works with or without a calendar attendee list. Evidence hierarchy:
+  self-introductions ("it's James here") > repeated address-then-response patterns
+  ("Sarah, thoughts?" → Them 3 replies) > anything else; third-person mentions are
+  the trap (names of people not in the call) and are discounted, hard when an
+  attendee list exists. Conservative assignment: multiple consistent evidence points
+  required, one name never maps to two clusters, unsure → keep the number ("Them 2"
+  accurate beats "Sarah" wrong). Transcript carries an auditable attribution header
+  ("Speakers: Sarah (Them 1, inferred), Them 2 (unidentified)") so inferences are
+  visible and trivially hand-correctable in the Markdown. `Me` remains ground truth
+  from the mic stream. Settings toggle (adds processing time); honest limit:
+  overlapping speech degrades everyone's diarization, including ours. Explicit
+  non-approach: joining meetings as a bot for per-participant streams —
+  cloud-service territory, rejected.
 
 ## Non-goals (v1)
 

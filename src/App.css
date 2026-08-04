@@ -545,6 +545,45 @@ body {
   color: light-dark(#a4302b, #ff8d88);
 }
 
+.prompt-editor {
+  width: 100%;
+  max-width: 560px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: inherit;
+  background: light-dark(rgba(0, 0, 0, 0.035), rgba(255, 255, 255, 0.06));
+  border: 1px solid light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  padding: 10px 12px;
+  resize: vertical;
+  user-select: text;
+}
+
+.prompt-editor:focus {
+  outline: none;
+  border-color: light-dark(rgba(0, 105, 220, 0.5), rgba(80, 160, 255, 0.5));
+}
+
+.prompt-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.prompt-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.section-hint code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+  background: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.1));
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
 /* ---------- status bar ---------- */
 
 .statusbar {

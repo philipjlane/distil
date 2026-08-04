@@ -280,10 +280,11 @@ fn distil_core<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> Result<(), String>
         }
         None => ollama::auto_pick(&settings.ollama_url)?,
     };
+    let (template, _) = models::load_notes_prompt(app);
     let notes = ollama::generate(
         &settings.ollama_url,
         &model,
-        &ollama::build_notes_prompt(&transcript),
+        &ollama::build_notes_prompt(&template, &transcript),
     )?;
     if notes.is_empty() {
         return Err(format!("{model} returned empty notes"));
@@ -873,6 +874,51 @@ async fn permissions_status(app: AppHandle) -> Result<Value, String> {
         .ok_or_else(|| "capture helper produced no permissions report".to_string())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotesPrompt {
+    text: String,
+    is_custom: bool,
+    default_text: String,
+}
+
+fn notes_prompt_state<R: Runtime>(app: &AppHandle<R>) -> NotesPrompt {
+    let (text, is_custom) = models::load_notes_prompt(app);
+    NotesPrompt {
+        text,
+        is_custom,
+        default_text: ollama::DEFAULT_NOTES_PROMPT.to_string(),
+    }
+}
+
+#[tauri::command]
+fn get_notes_prompt(app: AppHandle) -> NotesPrompt {
+    notes_prompt_state(&app)
+}
+
+#[tauri::command]
+fn set_notes_prompt(app: AppHandle, text: String) -> Result<NotesPrompt, String> {
+    models::save_notes_prompt(&app, &text)?;
+    Ok(notes_prompt_state(&app))
+}
+
+#[tauri::command]
+fn get_autostart(app: AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enable: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    if enable {
+        launcher.enable().map_err(|e| e.to_string())
+    } else {
+        launcher.disable().map_err(|e| e.to_string())
+    }
+}
+
 const PRIVACY_PANES: &[(&str, &str)] = &[
     (
         "microphone",
@@ -904,6 +950,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(Mutex::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
             current_state,
@@ -923,7 +973,11 @@ pub fn run() {
             set_whisper_model,
             set_keep_audio,
             permissions_status,
-            open_privacy_settings
+            open_privacy_settings,
+            get_autostart,
+            set_autostart,
+            get_notes_prompt,
+            set_notes_prompt
         ])
         .setup(|app| {
             // Menu-bar app: no Dock icon, lives in the tray.

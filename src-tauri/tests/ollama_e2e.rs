@@ -21,7 +21,10 @@ fn distils_sample_transcript_with_local_ollama() {
     let notes = distil_lib::ollama::generate(
         URL,
         &model,
-        &distil_lib::ollama::build_notes_prompt(transcript),
+        &distil_lib::ollama::build_notes_prompt(
+            distil_lib::ollama::DEFAULT_NOTES_PROMPT,
+            transcript,
+        ),
     )
     .expect("generation succeeds");
     println!("--- notes ---\n{notes}");
