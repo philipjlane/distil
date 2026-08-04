@@ -740,6 +740,17 @@ fn read_meeting(app: AppHandle, dir: String) -> Result<Value, String> {
     }))
 }
 
+/// Overwrite a meeting's notes.md — used by the interactive action-item
+/// checklist to persist `- [ ]` ⇄ `- [x]` toggles.
+#[tauri::command]
+fn update_notes(app: AppHandle, dir: String, content: String) -> Result<(), String> {
+    let path = validated_meeting_dir(&app, &dir)?;
+    if content.len() > 1_000_000 {
+        return Err("notes unexpectedly large".into());
+    }
+    std::fs::write(path.join("notes.md"), content).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn distil_meeting(app: AppHandle, dir: String) -> Result<(), String> {
     let path = validated_meeting_dir(&app, &dir)?;
@@ -1021,6 +1032,7 @@ pub fn run() {
             upcoming_meeting,
             list_meetings,
             read_meeting,
+            update_notes,
             distil_meeting,
             reveal_meeting,
             delete_meeting,

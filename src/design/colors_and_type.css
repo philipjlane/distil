@@ -1,0 +1,263 @@
+/* ============================================================================
+   ELAITCH — Colors & Type
+   ----------------------------------------------------------------------------
+   Single source of low-level visual tokens for the Elaitch brand.
+
+   Two surfaces consume these:
+     • Marketing site  (expressive: gradients, glass, glow, motion)
+     • App boilerplate (restrained shadcn-vue: solid fills, neutral cards)
+
+   Color sourced from the live Elaitch site (philipjlane/elaitch tailwind.config):
+   sky-blue primary, teal, fuchsia accent, coral. Per the brand owner's stated
+   preference ("blues and greens"), TEAL is promoted to co-lead alongside SKY,
+   and the brand gradient leads with sky→teal ("Aqua"). The original
+   sky→fuchsia gradient ("Spectrum") is retained as an expressive accent.
+   ========================================================================== */
+
+@import url('../fonts/fonts.css');
+
+:root {
+  /* ----- Brand ramps ----------------------------------------------------- */
+
+  /* Sky — primary. The Elaitch blue. */
+  --sky-50:  #f0f9ff;
+  --sky-100: #e0f2fe;
+  --sky-200: #bae6fd;
+  --sky-300: #7dd3fc;
+  --sky-400: #38bdf8;
+  --sky-500: #0ea5e9;
+  --sky-600: #0284c7;
+  --sky-700: #0369a1;
+  --sky-800: #075985;
+  --sky-900: #0c4a6e;
+
+  /* Teal — the "green". Co-lead, bridges blue↔green. */
+  --teal-50:  #f0fdfa;
+  --teal-100: #ccfbf1;
+  --teal-200: #99f6e4;
+  --teal-300: #5eead4;
+  --teal-400: #2dd4bf;
+  --teal-500: #14b8a6;
+  --teal-600: #0d9488;
+  --teal-700: #0f766e;
+  --teal-800: #115e59;
+  --teal-900: #134e4a;
+
+  /* Fuchsia — expressive accent, used sparingly. */
+  --accent-50:  #fdf4ff;
+  --accent-100: #fae8ff;
+  --accent-200: #f5d0fe;
+  --accent-300: #f0abfc;
+  --accent-400: #e879f9;
+  --accent-500: #d946ef;
+  --accent-600: #c026d3;
+  --accent-700: #a21caf;
+  --accent-800: #86198f;
+  --accent-900: #701a75;
+
+  /* Coral — alerts / destructive / warm pop. */
+  --coral-50:  #fff1f2;
+  --coral-100: #ffe4e6;
+  --coral-200: #fecdd3;
+  --coral-300: #fda4af;
+  --coral-400: #fb7185;
+  --coral-500: #f43f5e;
+  --coral-600: #e11d48;
+  --coral-700: #be123c;
+  --coral-800: #9f1239;
+  --coral-900: #881337;
+
+  /* Neutral — slate-tinted grays (Tailwind gray scale used on the live site). */
+  --gray-50:  #f9fafb;
+  --gray-100: #f3f4f6;
+  --gray-200: #e5e7eb;
+  --gray-300: #d1d5db;
+  --gray-400: #9ca3af;
+  --gray-500: #6b7280;
+  --gray-600: #4b5563;
+  --gray-700: #374151;
+  --gray-800: #1f2937;
+  --gray-900: #111827;
+  --gray-950: #0b0f17;
+
+  /* ----- Semantic color (light surface) ---------------------------------- */
+  --primary:            var(--sky-500);
+  --primary-strong:     var(--sky-600);
+  --primary-soft:       var(--sky-50);
+  --primary-foreground: #ffffff;
+
+  --secondary:            var(--teal-500);
+  --secondary-strong:     var(--teal-600);
+  --secondary-soft:       var(--teal-50);
+  --secondary-foreground: #ffffff;
+
+  --accent:            var(--accent-500);
+  --accent-strong:     var(--accent-600);
+  --accent-foreground: #ffffff;
+
+  --destructive:            var(--coral-500);
+  --destructive-foreground: #ffffff;
+
+  --background:    #ffffff;
+  --surface:       var(--gray-50);   /* alt section / muted panel */
+  --surface-sunk:  var(--gray-100);
+  --ink:           var(--gray-900);  /* headings */
+  --body:          var(--gray-600);  /* paragraph text */
+  --muted:         var(--gray-500);  /* meta / captions */
+  --border:        var(--gray-200);
+  --ring:          var(--sky-500);
+
+  /* Dark surface (footer, CTA panels, app dark mode) */
+  --ink-bg:        var(--gray-900);
+  --ink-bg-2:      var(--gray-950);
+  --on-ink:        var(--gray-300);
+  --on-ink-strong: #ffffff;
+
+  /* ----- Signature gradients --------------------------------------------- */
+  /* Aqua — the lead brand gradient (blue → green). */
+  --grad-aqua: linear-gradient(135deg, var(--sky-500) 0%, var(--teal-500) 100%);
+  /* Aqua-deep — for buttons / glow CTAs */
+  --grad-aqua-deep: linear-gradient(135deg, var(--sky-500) 0%, var(--teal-600) 55%, var(--sky-600) 100%);
+  /* Spectrum — original expressive accent gradient (blue → fuchsia → blue). */
+  --grad-spectrum: linear-gradient(90deg, var(--sky-500) 0%, var(--accent-500) 50%, var(--sky-600) 100%);
+  /* Ink — dark hero / footer wash */
+  --grad-ink: linear-gradient(135deg, var(--gray-900) 0%, var(--sky-900) 120%);
+  /* Wash — soft page background tint */
+  --grad-wash: linear-gradient(135deg, var(--gray-50) 0%, rgba(14,165,233,0.06) 45%, rgba(20,184,166,0.06) 100%);
+
+  /* ----- Type -------------------------------------------------------------
+     Display = Instrument Serif (editorial serif, with italic accent).
+     Body/UI = Space Grotesk. App product headings use --font-display-sans
+     to stay crisp; marketing headings use the serif --font-display. */
+  --font-display:      'Instrument Serif', Georgia, 'Times New Roman', serif;
+  --font-display-sans: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  --font-serif:        'Instrument Serif', Georgia, serif;
+  --font-sans:         'Space Grotesk', system-ui, -apple-system, sans-serif;
+  --font-mono:         'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+
+  /* Type scale (rem) — from the live site's Tailwind config */
+  --text-xs:   0.75rem;   /* 12 */
+  --text-sm:   0.875rem;  /* 14 */
+  --text-base: 1rem;      /* 16 */
+  --text-lg:   1.125rem;  /* 18 */
+  --text-xl:   1.25rem;   /* 20 */
+  --text-2xl:  1.5rem;    /* 24 */
+  --text-3xl:  1.875rem;  /* 30 */
+  --text-4xl:  2.25rem;   /* 36 */
+  --text-5xl:  3rem;      /* 48 */
+  --text-6xl:  3.75rem;   /* 60 */
+  --text-7xl:  4.5rem;    /* 72 */
+  --text-8xl:  6rem;      /* 96 */
+
+  --leading-tight:   1.1;
+  --leading-snug:    1.16;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.7;
+
+  --tracking-tighter: -0.05em;
+  --tracking-tight:   -0.025em;
+  --tracking-normal:  0;
+  --tracking-wide:    0.025em;
+  --tracking-widest:  0.1em;
+
+  --weight-light:    300;
+  --weight-normal:   400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
+  /* ----- Radii ------------------------------------------------------------ */
+  --radius-sm:   0.25rem;  /* inputs in app, chips */
+  --radius:      0.5rem;   /* app default (shadcn) */
+  --radius-lg:   0.75rem;  /* site buttons + cards (rounded-xl) */
+  --radius-xl:   1rem;     /* blog cards (rounded-2xl) */
+  --radius-full: 9999px;   /* pills, avatars */
+
+  /* ----- Elevation -------------------------------------------------------- */
+  --shadow-sm:  0 1px 2px 0 rgba(17,24,39,0.05);
+  --shadow:     0 1px 3px 0 rgba(17,24,39,0.10), 0 1px 2px -1px rgba(17,24,39,0.10);
+  --shadow-lg:  0 10px 15px -3px rgba(17,24,39,0.10), 0 4px 6px -4px rgba(17,24,39,0.10);
+  --shadow-2xl: 0 25px 50px -12px rgba(17,24,39,0.25);
+  /* Brand glow — the live site's button shadow */
+  --glow-sky:  0 10px 30px -8px rgba(14,165,233,0.55);
+  --glow-teal: 0 10px 30px -8px rgba(20,184,166,0.55);
+
+  /* ----- Motion ----------------------------------------------------------- */
+  --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast:   150ms;
+  --dur:        300ms;
+  --dur-slow:   500ms;
+}
+
+/* ============================================================================
+   SEMANTIC TYPE ELEMENTS — drop-in defaults
+   ========================================================================== */
+.h1, h1.brand {
+  font-family: var(--font-display);
+  font-weight: var(--weight-normal);
+  font-size: clamp(2.75rem, 5vw + 1rem, var(--text-7xl));
+  line-height: 1.02;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.h2, h2.brand {
+  font-family: var(--font-display);
+  font-weight: var(--weight-normal);
+  font-size: clamp(2.25rem, 3vw + 1rem, var(--text-6xl));
+  line-height: 1.06;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.h3, h3.brand {
+  font-family: var(--font-display);
+  font-weight: var(--weight-normal);
+  font-size: var(--text-3xl);
+  line-height: 1.15;
+  letter-spacing: 0;
+  color: var(--ink);
+}
+.lead {
+  font-family: var(--font-sans);
+  font-weight: var(--weight-normal);
+  font-size: var(--text-xl);
+  line-height: var(--leading-relaxed);
+  color: var(--body);
+}
+.p, p.brand {
+  font-family: var(--font-sans);
+  font-weight: var(--weight-normal);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  color: var(--body);
+}
+.eyebrow {
+  font-family: var(--font-sans);
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--primary-strong);
+}
+.code, code.brand {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--surface-sunk);
+  padding: 0.15em 0.4em;
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+}
+
+/* Gradient text helper — paints headings/stats with the brand gradient. */
+.text-gradient-aqua {
+  background: var(--grad-aqua);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.text-gradient-spectrum {
+  background: var(--grad-spectrum);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}

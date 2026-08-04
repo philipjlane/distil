@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Check, ChevronDown } from "lucide-react";
 
 type WhisperModel = {
   name: string;
@@ -23,6 +24,14 @@ type Settings = {
 type Permissions = { microphone: string; screenRecording: string; calendar?: string };
 
 type NotesPrompt = { text: string; isCustom: boolean; defaultText: string };
+
+function Switch({ on, onToggle }: { on: boolean; onToggle: (next: boolean) => void }) {
+  return (
+    <button className="ui-switch" data-on={on} onClick={() => onToggle(!on)}>
+      <span className="knob" />
+    </button>
+  );
+}
 
 export function SettingsPane({
   settings,
@@ -77,91 +86,121 @@ export function SettingsPane({
 
   const granted = (status: string | undefined) => status === "granted";
 
+  const permLine = (label: string, status: string | undefined, pane: string) => (
+    <div className="perm-line">
+      <span>{label}</span>
+      {granted(status) ? (
+        <span className="ui-badge badge-teal">
+          <Check size={11} strokeWidth={2.5} /> Granted
+        </span>
+      ) : (
+        <button
+          className="ui-btn ui-btn-outline ui-btn-sm"
+          onClick={() => invoke("open_privacy_settings", { pane })}
+        >
+          Open System Settings
+        </button>
+      )}
+    </div>
+  );
+
   return (
-    <div className="settings">
-      <section>
-        <h3>Transcription</h3>
-        <p className="section-hint">
-          Runs on-device with whisper.cpp. A model not yet on disk downloads
-          automatically the first time it's used.
+    <div className="settings-col">
+      <div className="page-head">
+        <h1 className="app-h1">Settings</h1>
+        <div className="page-sub">
+          Everything runs on this Mac unless you explicitly opt in.
+        </div>
+      </div>
+
+      <div className="ui-card section-card">
+        <h3 className="app-h2 card-h">Transcription</h3>
+        <p className="card-sub">
+          On-device with whisper.cpp. Models download automatically on first use.
         </p>
-        {whisperModels.map((m) => (
-          <label key={m.name} className="radio-row">
-            <input
-              type="radio"
-              name="whisper"
-              checked={m.selected}
-              onChange={() => {
+        <div className="model-rows">
+          {whisperModels.map((m) => (
+            <button
+              key={m.name}
+              className="model-row"
+              data-on={m.selected}
+              onClick={() => {
                 invoke("set_whisper_model", { model: m.name }).catch(() => {});
                 onSettingsChange({ ...settings, whisperModel: m.name });
               }}
-            />
-            <span className="radio-title">{m.name}</span>
-            <span className="radio-desc">
-              {m.description} · {m.sizeMb} MB
-              {m.downloaded ? " · downloaded" : ""}
-            </span>
-          </label>
-        ))}
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={settings.diarizeSpeakers}
-            onChange={(event) => {
-              const enable = event.target.checked;
+            >
+              <span className="radio-dot" />
+              <span className="model-main">
+                <span className="model-name">{m.name}</span>
+                <span className="model-desc">
+                  {" "}
+                  — {m.description} · {m.sizeMb} MB
+                </span>
+              </span>
+              {m.downloaded && <span className="ui-badge badge-teal">Downloaded</span>}
+            </button>
+          ))}
+        </div>
+        <div className="switch-row" style={{ marginTop: 16 }}>
+          <Switch
+            on={settings.diarizeSpeakers}
+            onToggle={(enable) => {
               invoke("set_diarize_speakers", { enable }).catch(() => {});
               onSettingsChange({ ...settings, diarizeSpeakers: enable });
             }}
           />
-          <span>
-            Identify multiple speakers
-            <em className="radio-desc">
-              Clusters distinct voices in the remote audio into Them 1 / Them 2 /
-              … and lets the distiller infer names from the call. First use
-              downloads ~45 MB of local diarization models. Adds processing time.
-            </em>
-          </span>
-        </label>
-      </section>
+          <div className="switch-main">
+            <div className="switch-title">Identify multiple speakers</div>
+            <div className="switch-desc">
+              Clusters distinct voices into Them 1 / Them 2 / … and lets the
+              distiller infer names from the call. First use downloads ~45 MB of
+              local models.
+            </div>
+          </div>
+        </div>
+      </div>
 
-      <section>
-        <h3>Distillation</h3>
-        <p className="section-hint">
-          Notes are written by a local model via Ollama. Cloud-routed Ollama
-          models are excluded by design — nothing leaves this Mac.
-        </p>
+      <div className="ui-card section-card">
+        <h3 className="app-h2 card-h">Distillation</h3>
+        <p className="card-sub">Notes are written by a local model via Ollama.</p>
         {ollamaError ? (
-          <p className="perm-warn">
-            Ollama isn't reachable — start the Ollama app (or `ollama serve`).
-          </p>
+          <div className="ui-alert ui-alert-error" style={{ padding: "10px 14px" }}>
+            <span style={{ fontSize: 13 }}>
+              Ollama isn't reachable — start the Ollama app (or `ollama serve`).
+            </span>
+          </div>
         ) : (
-          <select
-            value={settings.ollamaModel ?? ""}
-            onChange={(event) => {
-              const model = event.target.value || null;
-              invoke("set_ollama_model", { model }).catch(() => {});
-              onSettingsChange({ ...settings, ollamaModel: model });
-            }}
-          >
-            <option value="">Auto (largest local model)</option>
-            {ollamaModels.map((m) => (
-              <option key={m.name} value={m.name}>
-                {m.name}
-                {m.isCloud
-                  ? " · CLOUD"
-                  : m.parameterSize
-                    ? ` · ${m.parameterSize}B`
-                    : ""}
-              </option>
-            ))}
-          </select>
+          <div className="ui-select-wrap" style={{ maxWidth: 320 }}>
+            <select
+              className="ui-select"
+              value={settings.ollamaModel ?? ""}
+              onChange={(event) => {
+                const model = event.target.value || null;
+                invoke("set_ollama_model", { model }).catch(() => {});
+                onSettingsChange({ ...settings, ollamaModel: model });
+              }}
+            >
+              <option value="">Auto — largest local model</option>
+              {ollamaModels.map((m) => (
+                <option key={m.name} value={m.name}>
+                  {m.name}
+                  {m.isCloud
+                    ? " · CLOUD"
+                    : m.parameterSize
+                      ? ` · ${m.parameterSize}B`
+                      : ""}
+                </option>
+              ))}
+            </select>
+            <span className="chev">
+              <ChevronDown size={15} strokeWidth={2} />
+            </span>
+          </div>
         )}
-        <label className="check-row cloud-optin">
-          <input
-            type="checkbox"
-            checked={settings.allowCloudModels}
-            onChange={(event) => {
-              const allow = event.target.checked;
+        <div className="switch-row" style={{ marginTop: 16 }}>
+          <Switch
+            on={settings.allowCloudModels}
+            onToggle={(allow) => {
               invoke("set_allow_cloud_models", { allow })
                 .then(() => onReloadModels())
                 .catch(() => {});
@@ -175,131 +214,98 @@ export function SettingsPane({
               });
             }}
           />
-          <span>
-            Allow cloud Ollama models
-            <em className="radio-desc">
-              Models badged CLOUD run on Ollama's servers — transcripts you
-              distil with them leave this Mac. Ollama states zero retention and
-              no training. Cloud models are never chosen automatically; picking
-              one is always your explicit choice per the dropdown above.
-            </em>
-          </span>
-        </label>
-      </section>
+          <div className="switch-main">
+            <div className="switch-title">Allow cloud Ollama models</div>
+            <div className="switch-desc">
+              Models badged <span className="ui-badge badge-cloud">CLOUD</span> run
+              on Ollama's servers — transcripts sent to them leave this Mac. Never
+              chosen automatically.
+            </div>
+          </div>
+        </div>
+      </div>
 
-      <section>
-        <h3>Storage</h3>
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={settings.keepAudio}
-            onChange={(event) => {
-              invoke("set_keep_audio", { keep: event.target.checked }).catch(() => {});
-              onSettingsChange({ ...settings, keepAudio: event.target.checked });
-            }}
-          />
-          <span>
-            Keep audio files after transcription
-            <em className="radio-desc">
-              Off by default — raw recordings are the most sensitive artifact.
-              Meetings live in ~/Documents/Distil as plain Markdown.
-            </em>
-          </span>
-        </label>
-      </section>
+      <div className="ui-card section-card">
+        <h3 className="app-h2 card-h" style={{ marginBottom: 14 }}>
+          Storage &amp; launch
+        </h3>
+        <div className="switch-stack">
+          <div className="switch-row">
+            <Switch
+              on={settings.keepAudio}
+              onToggle={(keep) => {
+                invoke("set_keep_audio", { keep }).catch(() => {});
+                onSettingsChange({ ...settings, keepAudio: keep });
+              }}
+            />
+            <div className="switch-main">
+              <div className="switch-title">Keep audio after transcription</div>
+              <div className="switch-desc">
+                Off by default — recordings are the most sensitive artifact. Notes
+                live in ~/Documents/Distil as plain Markdown.
+              </div>
+            </div>
+          </div>
+          <div className="switch-row">
+            <Switch
+              on={autostart}
+              onToggle={(enable) => {
+                setAutostart(enable);
+                invoke("set_autostart", { enable }).catch(() => setAutostart(!enable));
+              }}
+            />
+            <div className="switch-main">
+              <div className="switch-title">Start Distil at login</div>
+              <div className="switch-desc">
+                Lives in the menu bar, ready when meetings start.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
 
-      <section>
-        <h3>Notes prompt</h3>
-        <p className="section-hint">
-          The instruction sent to the model when distilling notes. Remove sections
-          you don't want, add your own, change the tone. <code>{"{transcript}"}</code>{" "}
-          marks where the transcript goes; without it, the transcript is appended at
-          the end. Clearing the text restores the default.
+      <div className="ui-card section-card">
+        <h3 className="app-h2 card-h">Notes prompt</h3>
+        <p className="card-sub">
+          Your standing instruction to the model. {"{transcript}"} marks where the
+          transcript goes; clearing the text restores the default.
         </p>
         <textarea
-          className="prompt-editor"
-          rows={12}
+          className="ui-textarea prompt-editor"
+          rows={6}
           spellCheck={false}
           value={promptDraft}
           onChange={(event) => setPromptDraft(event.target.value)}
         />
-        <div className="prompt-actions">
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           <button
-            className="perm-refresh"
+            className="ui-btn ui-btn-default ui-btn-sm"
             disabled={prompt !== null && promptDraft === prompt.text}
             onClick={() => applyPrompt(promptDraft)}
           >
             {promptSaved ? "Saved ✓" : "Save prompt"}
           </button>
           {prompt?.isCustom && (
-            <button className="perm-refresh" onClick={() => applyPrompt("")}>
+            <button
+              className="ui-btn ui-btn-ghost ui-btn-sm"
+              onClick={() => applyPrompt("")}
+            >
               Reset to default
             </button>
           )}
         </div>
-      </section>
+      </div>
 
-      <section>
-        <h3>Launch</h3>
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={autostart}
-            onChange={(event) => {
-              const enable = event.target.checked;
-              setAutostart(enable);
-              invoke("set_autostart", { enable }).catch(() => setAutostart(!enable));
-            }}
-          />
-          <span>
-            Start Distil at login
-            <em className="radio-desc">
-              Distil lives in the menu bar, ready to record when meetings start.
-            </em>
-          </span>
-        </label>
-      </section>
-
-      <section>
-        <h3>Permissions</h3>
-        <div className="perm-row">
-          <span>Microphone</span>
-          {granted(permissions?.microphone) ? (
-            <em className="perm-ok">granted</em>
-          ) : (
-            <button onClick={() => invoke("open_privacy_settings", { pane: "microphone" })}>
-              {permissions ? `${permissions.microphone} — open System Settings` : "check…"}
-            </button>
-          )}
+      <div className="ui-card section-card">
+        <h3 className="app-h2 card-h" style={{ marginBottom: 14 }}>
+          Permissions
+        </h3>
+        <div className="perm-lines">
+          {permLine("Microphone", permissions?.microphone, "microphone")}
+          {permLine("Screen & system audio", permissions?.screenRecording, "screen")}
+          {permLine("Calendar (meeting prompts)", permissions?.calendar, "calendar")}
         </div>
-        <div className="perm-row">
-          <span>Screen &amp; system audio</span>
-          {granted(permissions?.screenRecording) ? (
-            <em className="perm-ok">granted</em>
-          ) : (
-            <button onClick={() => invoke("open_privacy_settings", { pane: "screen" })}>
-              {permissions
-                ? `${permissions.screenRecording} — open System Settings`
-                : "check…"}
-            </button>
-          )}
-        </div>
-        <div className="perm-row">
-          <span>Calendar (meeting prompts)</span>
-          {granted(permissions?.calendar) ? (
-            <em className="perm-ok">granted</em>
-          ) : (
-            <button onClick={() => invoke("open_privacy_settings", { pane: "calendar" })}>
-              {permissions
-                ? `${permissions.calendar ?? "unknown"} — open System Settings`
-                : "check…"}
-            </button>
-          )}
-        </div>
-        <button className="perm-refresh" onClick={refreshPermissions}>
-          Re-check
-        </button>
-      </section>
+      </div>
     </div>
   );
 }
