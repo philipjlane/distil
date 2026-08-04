@@ -4,5 +4,7 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Distil records your microphone during meetings you choose to record.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Distil reads your calendar locally to offer recording when meetings start. Nothing leaves your Mac.</string>
 </dict>
 </plist>

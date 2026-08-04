@@ -7,6 +7,17 @@ if arguments.contains("--check-permissions") {
     exit(0)
 }
 
+if arguments.contains("calendar") {
+    var hours = 12.0
+    if let index = arguments.firstIndex(of: "--hours"), index + 1 < arguments.count,
+        let parsed = Double(arguments[index + 1])
+    {
+        hours = parsed
+    }
+    Task { await CalendarReporter.runAndPrint(hours: hours) }
+    dispatchMain()
+}
+
 guard let flagIndex = arguments.firstIndex(of: "--out-dir"), flagIndex + 1 < arguments.count else {
     FileHandle.standardError.write(Data("usage: distil-capture --out-dir <dir> | --check-permissions\n".utf8))
     exit(2)

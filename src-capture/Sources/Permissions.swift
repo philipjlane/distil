@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreGraphics
+import EventKit
 import Foundation
 
 enum PermissionCheck {
@@ -13,10 +14,20 @@ enum PermissionCheck {
         @unknown default: microphone = "unknown"
         }
         let screen = CGPreflightScreenCaptureAccess() ? "granted" : "not-granted"
+        let calendar: String
+        switch EKEventStore.authorizationStatus(for: .event) {
+        case .fullAccess: calendar = "granted"
+        case .notDetermined: calendar = "not-determined"
+        case .denied: calendar = "denied"
+        case .restricted: calendar = "restricted"
+        case .writeOnly: calendar = "write-only"
+        @unknown default: calendar = "unknown"
+        }
         Emit.event([
             "event": "permissions",
             "microphone": microphone,
             "screenRecording": screen,
+            "calendar": calendar,
         ])
     }
 }

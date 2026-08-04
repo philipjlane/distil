@@ -110,6 +110,27 @@ body {
   color: light-dark(#0a5dc2, #8ec2ff);
 }
 
+.banner.upcoming {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: light-dark(rgba(224, 68, 62, 0.08), rgba(224, 68, 62, 0.14));
+  color: light-dark(#a4302b, #ff9d98);
+}
+
+.banner.upcoming button {
+  border: none;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 99px;
+  cursor: pointer;
+  background: #e0443e;
+  color: #fff;
+}
+
 /* ---------- body layout ---------- */
 
 .body {

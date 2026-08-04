@@ -1,3 +1,4 @@
+pub mod calendar;
 pub mod models;
 pub mod ollama;
 pub mod transcribe;
@@ -29,9 +30,18 @@ enum UiState {
     Error { message: String },
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpcomingMeeting {
+    title: String,
+    starts_at_display: String,
+}
+
 struct AppState {
     session: Option<RecordingSession>,
     last_state: UiState,
+    upcoming: Option<UpcomingMeeting>,
+    prompted_meetings: std::collections::HashSet<String>,
 }
 
 impl Default for AppState {
@@ -39,6 +49,8 @@ impl Default for AppState {
         Self {
             session: None,
             last_state: UiState::Idle { last_meeting: None },
+            upcoming: None,
+            prompted_meetings: std::collections::HashSet::new(),
         }
     }
 }
@@ -47,7 +59,11 @@ struct RecordingSession {
     child: CommandChild,
 }
 
-fn build_tray_menu<R: Runtime>(app: &AppHandle<R>, state: &UiState) -> tauri::Result<Menu<R>> {
+fn build_tray_menu<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &UiState,
+    upcoming: Option<&UpcomingMeeting>,
+) -> tauri::Result<Menu<R>> {
     let (toggle_label, toggle_enabled) = match state {
         UiState::Recording { .. } => ("Stop Recording", true),
         UiState::Stopping => ("Stopping…", false),
@@ -58,16 +74,34 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>, state: &UiState) -> tauri::Re
     let quit = MenuItem::with_id(app, "quit", "Quit Distil", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
+
+    let recording = matches!(state, UiState::Recording { .. } | UiState::Stopping);
+    if let (Some(meeting), false) = (upcoming, recording) {
+        let record_upcoming = MenuItem::with_id(
+            app,
+            "record-upcoming",
+            format!("Record: {} ({})", meeting.title, meeting.starts_at_display),
+            true,
+            None::<&str>,
+        )?;
+        let sep0 = PredefinedMenuItem::separator(app)?;
+        return Menu::with_items(app, &[&record_upcoming, &sep0, &toggle, &sep1, &open, &sep2, &quit]);
+    }
     Menu::with_items(app, &[&toggle, &sep1, &open, &sep2, &quit])
 }
 
 /// Single place that mutates UI-visible state: stores it, refreshes the tray,
 /// and notifies the frontend. Callers must not hold the state lock.
 fn emit_state<R: Runtime>(app: &AppHandle<R>, state: UiState) {
-    app.state::<Mutex<AppState>>().lock().unwrap().last_state = state.clone();
+    let upcoming = {
+        let handle = app.state::<Mutex<AppState>>();
+        let mut guard = handle.lock().unwrap();
+        guard.last_state = state.clone();
+        guard.upcoming.clone()
+    };
 
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        if let Ok(menu) = build_tray_menu(app, &state) {
+        if let Ok(menu) = build_tray_menu(app, &state, upcoming.as_ref()) {
             let _ = tray.set_menu(Some(menu));
         }
         let tooltip = match state {
@@ -108,15 +142,17 @@ fn meetings_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(docs.join("Distil"))
 }
 
-fn start_recording<R: Runtime>(app: &AppHandle<R>) {
+fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>) {
     if app.state::<Mutex<AppState>>().lock().unwrap().session.is_some() {
         return;
     }
 
+    let title = title.map(calendar::sanitize_title).unwrap_or_else(|| "Meeting".to_string());
     let spawned = (|| -> Result<_, String> {
         let dir = meetings_root(app)?.join(format!(
-            "{} Meeting",
-            chrono::Local::now().format("%Y-%m-%d %H.%M")
+            "{} {}",
+            chrono::Local::now().format("%Y-%m-%d %H.%M"),
+            title
         ));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let command = app
@@ -418,7 +454,106 @@ fn toggle_recording_impl<R: Runtime>(app: &AppHandle<R>) {
     if recording {
         stop_recording(app);
     } else {
-        start_recording(app);
+        start_recording(app, None);
+    }
+}
+
+/// Start recording the meeting the calendar watcher surfaced.
+fn record_upcoming_impl<R: Runtime>(app: &AppHandle<R>) {
+    let title = app
+        .state::<Mutex<AppState>>()
+        .lock()
+        .unwrap()
+        .upcoming
+        .as_ref()
+        .map(|m| m.title.clone());
+    start_recording(app, title.as_deref());
+}
+
+const CALENDAR_POLL_SECS: u64 = 60;
+/// Prompt window: from 2 minutes before a meeting starts until 10 minutes in.
+const LEAD_SECS: i64 = 120;
+const LATE_SECS: i64 = 600;
+
+fn start_calendar_watcher<R: Runtime>(app: AppHandle<R>) {
+    std::thread::spawn(move || loop {
+        poll_calendar(&app);
+        std::thread::sleep(std::time::Duration::from_secs(CALENDAR_POLL_SECS));
+    });
+}
+
+fn poll_calendar<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(command) = app.shell().sidecar("distil-capture") else {
+        return;
+    };
+    let Ok(output) =
+        tauri::async_runtime::block_on(command.args(["calendar", "--hours", "12"]).output())
+    else {
+        return;
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(report) = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|v| v.get("event").and_then(Value::as_str) == Some("calendar"))
+    else {
+        return;
+    };
+    if report.get("authorized").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let events: Vec<calendar::CalendarEvent> =
+        serde_json::from_value(report.get("events").cloned().unwrap_or_default())
+            .unwrap_or_default();
+
+    let now = chrono::Local::now();
+    let candidate = events
+        .iter()
+        .filter(|e| calendar::is_real_meeting(e))
+        .filter_map(|e| {
+            let starts = chrono::DateTime::parse_from_rfc3339(&e.starts_at).ok()?;
+            let delta = starts.signed_duration_since(now).num_seconds();
+            (-LATE_SECS..=LEAD_SECS).contains(&delta).then_some((e, starts, delta))
+        })
+        .min_by_key(|(_, _, delta)| *delta);
+
+    let upcoming = candidate.map(|(event, starts, _)| UpcomingMeeting {
+        title: event.title.clone(),
+        starts_at_display: starts.with_timezone(&chrono::Local).format("%H:%M").to_string(),
+    });
+
+    let (changed, should_notify, current_state) = {
+        let handle = app.state::<Mutex<AppState>>();
+        let mut guard = handle.lock().unwrap();
+        let changed = match (&guard.upcoming, &upcoming) {
+            (None, None) => false,
+            (Some(a), Some(b)) => a.title != b.title || a.starts_at_display != b.starts_at_display,
+            _ => true,
+        };
+        guard.upcoming = upcoming.clone();
+        let should_notify = match (&upcoming, guard.session.is_some()) {
+            (Some(meeting), false) => {
+                let key = format!("{}|{}", meeting.title, meeting.starts_at_display);
+                guard.prompted_meetings.insert(key)
+            }
+            _ => false,
+        };
+        (changed, should_notify, guard.last_state.clone())
+    };
+
+    if changed {
+        // Rebuild the tray so the "Record: …" item appears/disappears.
+        emit_state(app, current_state);
+        let _ = app.emit("upcoming-meeting", &upcoming);
+    }
+    if should_notify {
+        if let Some(meeting) = &upcoming {
+            notify(
+                app,
+                &format!("{} at {}", meeting.title, meeting.starts_at_display),
+                "Click the Distil menu-bar icon to record this meeting.",
+            );
+        }
     }
 }
 
@@ -437,6 +572,16 @@ fn current_state(state: tauri::State<'_, Mutex<AppState>>) -> UiState {
 #[tauri::command]
 fn toggle_recording(app: AppHandle) {
     toggle_recording_impl(&app);
+}
+
+#[tauri::command]
+fn record_upcoming(app: AppHandle) {
+    record_upcoming_impl(&app);
+}
+
+#[tauri::command]
+fn upcoming_meeting(state: tauri::State<'_, Mutex<AppState>>) -> Option<UpcomingMeeting> {
+    state.lock().unwrap().upcoming.clone()
 }
 
 #[derive(serde::Serialize)]
@@ -654,6 +799,10 @@ const PRIVACY_PANES: &[(&str, &str)] = &[
         "screen",
         "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
     ),
+    (
+        "calendar",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
+    ),
 ];
 
 #[tauri::command]
@@ -676,6 +825,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             current_state,
             toggle_recording,
+            record_upcoming,
+            upcoming_meeting,
             list_meetings,
             read_meeting,
             distil_meeting,
@@ -694,7 +845,7 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let initial = UiState::Idle { last_meeting: None };
-            let menu = build_tray_menu(app.handle(), &initial)?;
+            let menu = build_tray_menu(app.handle(), &initial, None)?;
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().unwrap().clone())
                 .icon_as_template(true)
@@ -703,11 +854,14 @@ pub fn run() {
                 .tooltip("Distil")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "toggle-recording" => toggle_recording_impl(app),
+                    "record-upcoming" => record_upcoming_impl(app),
                     "open-library" => show_library(app),
                     "quit" => quit_app(app),
                     _ => {}
                 })
                 .build(app)?;
+
+            start_calendar_watcher(app.handle().clone());
 
             Ok(())
         })

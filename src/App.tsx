@@ -37,6 +37,8 @@ type Settings = {
   ollamaModel: string | null;
 };
 
+type UpcomingMeeting = { title: string; startsAtDisplay: string } | null;
+
 function render(md: string): string {
   return marked.parse(md) as string;
 }
@@ -52,6 +54,7 @@ function App() {
   const [modelsError, setModelsError] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [upcoming, setUpcoming] = useState<UpcomingMeeting>(null);
   const [elapsed, setElapsed] = useState(0);
   const timer = useRef<number | undefined>(undefined);
   const selectedRef = useRef<string | null>(null);
@@ -107,7 +110,11 @@ function App() {
           loadDoc(event.payload);
         }
       }),
+      listen<UpcomingMeeting>("upcoming-meeting", (event) => {
+        setUpcoming(event.payload);
+      }),
     ];
+    invoke<UpcomingMeeting>("upcoming_meeting").then(setUpcoming).catch(() => {});
     return () => {
       subscriptions.forEach((s) => s.then((stop) => stop()));
     };
@@ -174,6 +181,15 @@ function App() {
       </header>
 
       {banner}
+
+      {upcoming && !recording && !stopping && (
+        <div className="banner upcoming">
+          <span>
+            {upcoming.title} at {upcoming.startsAtDisplay}
+          </span>
+          <button onClick={() => invoke("record_upcoming")}>Record</button>
+        </div>
+      )}
 
       {showSettings && settings && (
         <SettingsPane

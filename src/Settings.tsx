@@ -18,7 +18,7 @@ type Settings = {
   ollamaModel: string | null;
 };
 
-type Permissions = { microphone: string; screenRecording: string };
+type Permissions = { microphone: string; screenRecording: string; calendar?: string };
 
 export function SettingsPane({
   settings,
@@ -148,6 +148,18 @@ export function SettingsPane({
             <button onClick={() => invoke("open_privacy_settings", { pane: "screen" })}>
               {permissions
                 ? `${permissions.screenRecording} — open System Settings`
+                : "check…"}
+            </button>
+          )}
+        </div>
+        <div className="perm-row">
+          <span>Calendar (meeting prompts)</span>
+          {granted(permissions?.calendar) ? (
+            <em className="perm-ok">granted</em>
+          ) : (
+            <button onClick={() => invoke("open_privacy_settings", { pane: "calendar" })}>
+              {permissions
+                ? `${permissions.calendar ?? "unknown"} — open System Settings`
                 : "check…"}
             </button>
           )}
