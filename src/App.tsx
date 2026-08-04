@@ -21,12 +21,64 @@ type ModelDownload = {
 type Meeting = {
   dir: string;
   name: string;
+  title: string;
   startedAt: string | null;
+  durationSecs: number | null;
   hasNotes: boolean;
   hasTranscript: boolean;
 };
 
-type MeetingDoc = { notes: string | null; transcript: string | null };
+type MeetingMeta = {
+  startedAt?: string;
+  whisperModel?: string;
+  ollamaModel?: string;
+} | null;
+
+type MeetingDoc = { notes: string | null; transcript: string | null; meta: MeetingMeta };
+
+function relativeStamp(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  const now = new Date();
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (sameDay(date, now)) return `Today ${time}`;
+  if (sameDay(date, yesterday)) return `Yesterday ${time}`;
+  return `${date.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${time}`;
+}
+
+function durationLabel(secs: number | null | undefined): string | null {
+  if (!secs || secs <= 0) return null;
+  const minutes = Math.floor(secs / 60);
+  const seconds = Math.round(secs % 60);
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+const Icon = {
+  folder: (
+    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
+      <path d="M1.75 4.25a1 1 0 0 1 1-1h3l1.5 1.75h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-10.5a1 1 0 0 1-1-1z" />
+    </svg>
+  ),
+  copy: (
+    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+      <path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1" />
+    </svg>
+  ),
+  trash: (
+    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2.5 4.5h11M6.5 2.5h3M4 4.5l.7 9a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-9M6.5 7v4.5M9.5 7v4.5" />
+    </svg>
+  ),
+  check: (
+    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 8.5l3.5 3.5L13 5" />
+    </svg>
+  ),
+};
 
 type OllamaModel = { name: string; parameterSize: number | null; isCloud: boolean };
 
@@ -57,6 +109,8 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [upcoming, setUpcoming] = useState<UpcomingMeeting>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selected;
@@ -128,6 +182,8 @@ function App() {
   useEffect(() => {
     if (selected) loadDoc(selected);
     else setDoc(null);
+    setCopied(false);
+    setConfirmingDelete(false);
   }, [selected, loadDoc]);
 
   useEffect(() => {
@@ -146,6 +202,37 @@ function App() {
   ).padStart(2, "0")}`;
 
   const current = meetings.find((m) => m.dir === selected) ?? null;
+  const processingSelected =
+    (state.phase === "transcribing" || state.phase === "distilling") &&
+    state.dir === selected;
+
+  const copyCurrent = () => {
+    const content = view === "notes" ? doc?.notes : doc?.transcript;
+    if (!content) return;
+    navigator.clipboard
+      .writeText(content)
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {});
+  };
+
+  const deleteCurrent = () => {
+    if (!current) return;
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      window.setTimeout(() => setConfirmingDelete(false), 3000);
+      return;
+    }
+    invoke("delete_meeting", { dir: current.dir })
+      .then(() => {
+        setConfirmingDelete(false);
+        setSelected(null);
+        refreshMeetings();
+      })
+      .catch(() => setConfirmingDelete(false));
+  };
 
   const banner = (() => {
     if (state.phase === "error") return <div className="banner error">{state.message}</div>;
@@ -164,7 +251,7 @@ function App() {
 
   return (
     <main className="app">
-      <header className="titlebar">
+      <header className="titlebar" data-tauri-drag-region>
         <h1>Distil</h1>
         <div className="titlebar-actions">
           <button
@@ -209,21 +296,33 @@ function App() {
       <div className="body" style={showSettings ? { display: "none" } : undefined}>
         <aside className="sidebar">
           {meetings.length === 0 && <p className="sidebar-empty">No meetings yet</p>}
-          {meetings.map((m) => (
-            <button
-              key={m.dir}
-              className={m.dir === selected ? "meeting selected" : "meeting"}
-              onClick={() => setSelected(m.dir)}
-            >
-              <span className="meeting-name">{prettyName(m.name)}</span>
-              <span className="meeting-tags">
-                {m.hasNotes ? <em className="tag notes">notes</em> : null}
-                {!m.hasNotes && m.hasTranscript ? (
-                  <em className="tag transcript">transcript</em>
-                ) : null}
-              </span>
-            </button>
-          ))}
+          {meetings.map((m) => {
+            const busyHere =
+              (state.phase === "transcribing" || state.phase === "distilling") &&
+              state.dir === m.dir;
+            const sub = [relativeStamp(m.startedAt), durationLabel(m.durationSecs)]
+              .filter(Boolean)
+              .join(" · ");
+            return (
+              <button
+                key={m.dir}
+                className={m.dir === selected ? "meeting selected" : "meeting"}
+                onClick={() => setSelected(m.dir)}
+              >
+                <span className="meeting-row">
+                  <span className="meeting-name">{m.title}</span>
+                  {busyHere ? (
+                    <em className="tag working">working</em>
+                  ) : m.hasNotes ? (
+                    <em className="tag notes">notes</em>
+                  ) : m.hasTranscript ? (
+                    <em className="tag transcript">transcript</em>
+                  ) : null}
+                </span>
+                {sub && <span className="meeting-sub">{sub}</span>}
+              </button>
+            );
+          })}
         </aside>
 
         <section className="detail">
@@ -240,7 +339,18 @@ function App() {
           {current && (
             <>
               <div className="detail-header">
-                <h2>{prettyName(current.name)}</h2>
+                <div className="detail-title">
+                  <h2>{current.title}</h2>
+                  <span className="detail-meta">
+                    {[
+                      relativeStamp(current.startedAt),
+                      durationLabel(current.durationSecs),
+                      doc?.meta?.ollamaModel ?? undefined,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                </div>
                 <div className="detail-actions">
                   <div className="tabs">
                     <button
@@ -258,7 +368,7 @@ function App() {
                       Transcript
                     </button>
                   </div>
-                  {current.hasTranscript && !current.hasNotes && (
+                  {current.hasTranscript && !current.hasNotes && !processingSelected && (
                     <button
                       className="generate"
                       disabled={pipelineBusy}
@@ -267,17 +377,51 @@ function App() {
                       Generate notes
                     </button>
                   )}
+                  <button
+                    className="icon-button"
+                    title="Reveal in Finder"
+                    onClick={() => invoke("reveal_meeting", { dir: current.dir })}
+                  >
+                    {Icon.folder}
+                  </button>
+                  <button
+                    className="icon-button"
+                    title="Copy to clipboard"
+                    disabled={!(view === "notes" ? doc?.notes : doc?.transcript)}
+                    onClick={copyCurrent}
+                  >
+                    {copied ? Icon.check : Icon.copy}
+                  </button>
+                  <button
+                    className={confirmingDelete ? "icon-button danger confirming" : "icon-button danger"}
+                    title={confirmingDelete ? "Click again to move to Trash" : "Delete meeting"}
+                    onClick={deleteCurrent}
+                  >
+                    {Icon.trash}
+                    {confirmingDelete && <span className="confirm-label">Sure?</span>}
+                  </button>
                 </div>
               </div>
-              <article
-                className="markdown"
-                dangerouslySetInnerHTML={{
-                  __html: render(
-                    (view === "notes" ? doc?.notes : doc?.transcript) ??
-                      "_Nothing here yet._",
-                  ),
-                }}
-              />
+              {processingSelected ? (
+                <div className="empty processing">
+                  <p className="empty-title">
+                    {state.phase === "transcribing" ? "Transcribing…" : "Distilling notes…"}
+                  </p>
+                  <p className="empty-hint">
+                    Running locally — this view updates the moment it's done.
+                  </p>
+                </div>
+              ) : (
+                <article
+                  className="markdown"
+                  dangerouslySetInnerHTML={{
+                    __html: render(
+                      (view === "notes" ? doc?.notes : doc?.transcript) ??
+                        "_Nothing here yet._",
+                    ),
+                  }}
+                />
+              )}
             </>
           )}
         </section>
@@ -298,10 +442,6 @@ function App() {
 
 function basename(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
-}
-
-function prettyName(name: string): string {
-  return name.replace(/ Meeting$/, "");
 }
 
 export default App;

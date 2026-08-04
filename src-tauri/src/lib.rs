@@ -596,9 +596,25 @@ fn upcoming_meeting(state: tauri::State<'_, Mutex<AppState>>) -> Option<Upcoming
 struct MeetingSummary {
     dir: String,
     name: String,
+    /// Folder name minus the leading "YYYY-MM-DD HH.MM " timestamp.
+    title: String,
     started_at: Option<String>,
+    duration_secs: Option<f64>,
     has_notes: bool,
     has_transcript: bool,
+}
+
+fn title_from_folder_name(name: &str) -> String {
+    let rest = name
+        .split_once(' ')
+        .and_then(|(date, rest)| {
+            (date.len() == 10 && date.chars().filter(|c| *c == '-').count() == 2)
+                .then_some(rest)
+        })
+        .and_then(|rest| rest.split_once(' ').map(|(_, title)| title))
+        .unwrap_or(name)
+        .trim();
+    if rest.is_empty() { "Meeting".to_string() } else { rest.to_string() }
 }
 
 #[tauri::command]
@@ -611,20 +627,32 @@ fn list_meetings(app: AppHandle) -> Result<Vec<MeetingSummary>, String> {
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
-        .map(|path| MeetingSummary {
-            name: path
+        .map(|path| {
+            let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            started_at: std::fs::read(path.join("meta.json"))
+                .unwrap_or_default();
+            let meta = std::fs::read(path.join("meta.json"))
                 .ok()
-                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .and_then(|meta| {
-                    meta.get("startedAt").and_then(Value::as_str).map(String::from)
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+            let capture = meta.as_ref().and_then(|m| m.get("capture"));
+            let duration_secs = capture.and_then(|c| {
+                let mic = c.get("micSeconds").and_then(Value::as_f64).unwrap_or(0.0);
+                let system = c.get("systemSeconds").and_then(Value::as_f64).unwrap_or(0.0);
+                let longest = mic.max(system);
+                (longest > 0.0).then_some(longest)
+            });
+            MeetingSummary {
+                title: title_from_folder_name(&name),
+                started_at: meta.as_ref().and_then(|m| {
+                    m.get("startedAt").and_then(Value::as_str).map(String::from)
                 }),
-            has_notes: path.join("notes.md").exists(),
-            has_transcript: path.join("transcript.md").exists(),
-            dir: path.display().to_string(),
+                duration_secs,
+                has_notes: path.join("notes.md").exists(),
+                has_transcript: path.join("transcript.md").exists(),
+                dir: path.display().to_string(),
+                name,
+            }
         })
         .collect();
     meetings.sort_by(|a, b| b.started_at.cmp(&a.started_at).then(b.name.cmp(&a.name)));
@@ -694,6 +722,36 @@ fn distil_meeting(app: AppHandle, dir: String) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+#[tauri::command]
+fn reveal_meeting(app: AppHandle, dir: String) -> Result<(), String> {
+    let path = validated_meeting_dir(&app, &dir)?;
+    tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| e.to_string())
+}
+
+/// Moves the meeting folder to the user's Trash (recoverable) rather than
+/// deleting it outright.
+#[tauri::command]
+fn delete_meeting(app: AppHandle, dir: String) -> Result<(), String> {
+    let path = validated_meeting_dir(&app, &dir)?;
+    let trash = app
+        .path()
+        .home_dir()
+        .map_err(|e| e.to_string())?
+        .join(".Trash");
+    let base_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Distil meeting".into());
+    let mut target = trash.join(&base_name);
+    if target.exists() {
+        target = trash.join(format!(
+            "{base_name} {}",
+            chrono::Local::now().format("%H.%M.%S")
+        ));
+    }
+    std::fs::rename(&path, &target).map_err(|e| format!("could not move to Trash: {e}"))
 }
 
 #[derive(serde::Serialize)]
@@ -855,6 +913,8 @@ pub fn run() {
             list_meetings,
             read_meeting,
             distil_meeting,
+            reveal_meeting,
+            delete_meeting,
             list_ollama_models,
             get_settings,
             set_ollama_model,
@@ -872,8 +932,10 @@ pub fn run() {
 
             let initial = UiState::Idle { last_meeting: None };
             let menu = build_tray_menu(app.handle(), &initial, None)?;
+            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))
+                .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
             TrayIconBuilder::with_id(TRAY_ID)
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
                 .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(true)
