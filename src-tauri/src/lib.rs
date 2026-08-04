@@ -9,8 +9,7 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, Runtime,
 };
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -60,53 +59,41 @@ impl Default for AppState {
 
 struct RecordingSession {
     child: CommandChild,
+    started: std::time::Instant,
 }
 
-fn build_tray_menu<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &UiState,
-    upcoming: Option<&UpcomingMeeting>,
-) -> tauri::Result<Menu<R>> {
-    let (toggle_label, toggle_enabled) = match state {
-        UiState::Recording { .. } => ("Stop Recording", true),
-        UiState::Stopping => ("Stopping…", false),
-        _ => ("Start Recording", true),
+/// Show/hide the tray panel window, positioned under the tray icon.
+fn toggle_tray_panel<R: Runtime>(app: &AppHandle<R>, rect: tauri::Rect) {
+    let Some(panel) = app.get_webview_window("tray") else {
+        return;
     };
-    let toggle = MenuItem::with_id(app, "toggle-recording", toggle_label, toggle_enabled, None::<&str>)?;
-    let open = MenuItem::with_id(app, "open-library", "Open Distil", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Distil", true, None::<&str>)?;
-    let sep1 = PredefinedMenuItem::separator(app)?;
-    let sep2 = PredefinedMenuItem::separator(app)?;
-
-    let recording = matches!(state, UiState::Recording { .. } | UiState::Stopping);
-    if let (Some(meeting), false) = (upcoming, recording) {
-        let record_upcoming = MenuItem::with_id(
-            app,
-            "record-upcoming",
-            format!("Record: {} ({})", meeting.title, meeting.starts_at_display),
-            true,
-            None::<&str>,
-        )?;
-        let sep0 = PredefinedMenuItem::separator(app)?;
-        return Menu::with_items(app, &[&record_upcoming, &sep0, &toggle, &sep1, &open, &sep2, &quit]);
+    if panel.is_visible().unwrap_or(false) {
+        let _ = panel.hide();
+        return;
     }
-    Menu::with_items(app, &[&toggle, &sep1, &open, &sep2, &quit])
+    let scale = panel.scale_factor().unwrap_or(2.0);
+    let (icon_x, icon_y) = match rect.position {
+        tauri::Position::Physical(p) => (f64::from(p.x), f64::from(p.y)),
+        tauri::Position::Logical(l) => (l.x * scale, l.y * scale),
+    };
+    let (icon_w, icon_h) = match rect.size {
+        tauri::Size::Physical(s) => (f64::from(s.width), f64::from(s.height)),
+        tauri::Size::Logical(l) => (l.width * scale, l.height * scale),
+    };
+    let panel_width = 300.0 * scale;
+    let x = icon_x + icon_w / 2.0 - panel_width / 2.0;
+    let y = icon_y + icon_h + 6.0 * scale;
+    let _ = panel.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+    let _ = panel.show();
+    let _ = panel.set_focus();
 }
 
 /// Single place that mutates UI-visible state: stores it, refreshes the tray,
 /// and notifies the frontend. Callers must not hold the state lock.
 fn emit_state<R: Runtime>(app: &AppHandle<R>, state: UiState) {
-    let upcoming = {
-        let handle = app.state::<Mutex<AppState>>();
-        let mut guard = handle.lock().unwrap();
-        guard.last_state = state.clone();
-        guard.upcoming.clone()
-    };
+    app.state::<Mutex<AppState>>().lock().unwrap().last_state = state.clone();
 
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        if let Ok(menu) = build_tray_menu(app, &state, upcoming.as_ref()) {
-            let _ = tray.set_menu(Some(menu));
-        }
         let tooltip = match state {
             UiState::Recording { .. } => "Distil — recording",
             UiState::Transcribing { .. } => "Distil — transcribing",
@@ -175,8 +162,10 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>, attendee
         }
     };
 
-    app.state::<Mutex<AppState>>().lock().unwrap().session =
-        Some(RecordingSession { child });
+    app.state::<Mutex<AppState>>().lock().unwrap().session = Some(RecordingSession {
+        child,
+        started: std::time::Instant::now(),
+    });
     emit_state(app, UiState::Recording { dir: dir.display().to_string() });
 
     let app = app.clone();
@@ -601,9 +590,8 @@ fn poll_calendar<R: Runtime>(app: &AppHandle<R>) {
         (changed, should_notify, guard.last_state.clone())
     };
 
+    let _ = &current_state;
     if changed {
-        // Rebuild the tray so the "Record: …" item appears/disappears.
-        emit_state(app, current_state);
         let _ = app.emit("upcoming-meeting", &upcoming);
     }
     if should_notify {
@@ -642,6 +630,44 @@ fn record_upcoming(app: AppHandle) {
 #[tauri::command]
 fn upcoming_meeting(state: tauri::State<'_, Mutex<AppState>>) -> Option<UpcomingMeeting> {
     state.lock().unwrap().upcoming.clone()
+}
+
+#[tauri::command]
+fn recording_elapsed(state: tauri::State<'_, Mutex<AppState>>) -> Option<u64> {
+    state
+        .lock()
+        .unwrap()
+        .session
+        .as_ref()
+        .map(|s| s.started.elapsed().as_secs())
+}
+
+fn hide_tray_panel<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(panel) = app.get_webview_window("tray") {
+        let _ = panel.hide();
+    }
+}
+
+#[tauri::command]
+fn open_meeting(app: AppHandle, dir: String) -> Result<(), String> {
+    let path = validated_meeting_dir(&app, &dir)?;
+    hide_tray_panel(&app);
+    show_library(&app);
+    let _ = app.emit("open-meeting", path.display().to_string());
+    Ok(())
+}
+
+#[tauri::command]
+fn open_settings(app: AppHandle) {
+    hide_tray_panel(&app);
+    show_library(&app);
+    let _ = app.emit("open-settings", ());
+}
+
+#[tauri::command]
+fn quit(app: AppHandle) {
+    hide_tray_panel(&app);
+    quit_app(&app);
 }
 
 #[derive(serde::Serialize)]
@@ -1030,6 +1056,10 @@ pub fn run() {
             toggle_recording,
             record_upcoming,
             upcoming_meeting,
+            recording_elapsed,
+            open_meeting,
+            open_settings,
+            quit,
             list_meetings,
             read_meeting,
             update_notes,
@@ -1056,22 +1086,22 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let initial = UiState::Idle { last_meeting: None };
-            let menu = build_tray_menu(app.handle(), &initial, None)?;
             let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))
                 .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tray_icon)
                 .icon_as_template(true)
-                .menu(&menu)
-                .show_menu_on_left_click(true)
                 .tooltip("Distil")
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "toggle-recording" => toggle_recording_impl(app),
-                    "record-upcoming" => record_upcoming_impl(app),
-                    "open-library" => show_library(app),
-                    "quit" => quit_app(app),
-                    _ => {}
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        rect,
+                        ..
+                    } = event
+                    {
+                        toggle_tray_panel(tray.app_handle(), rect);
+                    }
                 })
                 .build(app)?;
 
@@ -1079,12 +1109,17 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            // Closing the library window hides it; the app lives in the tray.
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            // Closing a window hides it; the app lives in the tray.
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 let _ = window.hide();
                 api.prevent_close();
             }
+            // The tray panel behaves like a popover: losing focus dismisses it.
+            tauri::WindowEvent::Focused(false) if window.label() == "tray" => {
+                let _ = window.hide();
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

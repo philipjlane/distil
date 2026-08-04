@@ -627,6 +627,61 @@ body {
   gap: 10px;
 }
 
+/* ---------- tray panel ---------- */
+
+.tray-panel {
+  width: 300px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2xl);
+  padding: 6px;
+  font-family: var(--font-sans);
+  color: var(--ink);
+  box-sizing: border-box;
+}
+
+.tray-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+}
+
+.tray-tile {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--grad-aqua);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.tray-name {
+  font-weight: 700;
+  font-size: 14.5px;
+  font-family: var(--font-display-sans);
+}
+
+.tray-label {
+  padding: 7px 12px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tray-action {
+  color: var(--sky-600);
+  font-weight: 600;
+  font-size: 13px;
+  flex: none;
+}
+
 /* ---------- onboarding ---------- */
 
 .onboard-wrap {

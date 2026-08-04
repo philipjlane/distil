@@ -273,6 +273,13 @@ function App() {
       listen<UpcomingMeeting>("upcoming-meeting", (event) => {
         setUpcoming(event.payload);
       }),
+      listen<string>("open-meeting", (event) => {
+        setNav("library");
+        setSelected(event.payload);
+      }),
+      listen("open-settings", () => {
+        setNav("settings");
+      }),
     ];
     return () => {
       subscriptions.forEach((s) => s.then((stop) => stop()));
