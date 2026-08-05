@@ -12,7 +12,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+# Cargo lives in ~/.cargo/bin with a stock rustup install, but Homebrew's
+# rustup formula is keg-only and puts the shims under its own opt prefix.
+export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:$PATH"
 npm run tauri build
 
 APP=src-tauri/target/release/bundle/macos/Distil.app
