@@ -183,10 +183,17 @@ export function SettingsPane({
         <h3 className="app-h2 card-h">Distillation</h3>
         <p className="card-sub">Notes are written by a local model via Ollama.</p>
         {ollamaError ? (
-          <div className="ui-alert ui-alert-error" style={{ padding: "10px 14px" }}>
-            <span style={{ fontSize: 13 }}>
+          <div
+            className="ui-alert ui-alert-error"
+            style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: 12 }}
+          >
+            <span style={{ fontSize: 13, flex: 1 }}>
               Ollama isn't reachable — start the Ollama app (or `ollama serve`).
+              Distil keeps checking.
             </span>
+            <button className="ui-btn ui-btn-outline ui-btn-sm" onClick={onReloadModels}>
+              Retry
+            </button>
           </div>
         ) : (
           <div className="ui-select-wrap" style={{ maxWidth: 320 }}>

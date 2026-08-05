@@ -235,6 +235,15 @@ function App() {
       });
   }, []);
 
+  // Ollama is often started after Distil. While it's unreachable keep
+  // re-checking, so the banner clears itself rather than stranding the user on
+  // a stale error until the next launch. Stops as soon as a check succeeds.
+  useEffect(() => {
+    if (!modelsError) return;
+    const poll = window.setInterval(loadModels, 5000);
+    return () => window.clearInterval(poll);
+  }, [modelsError, loadModels]);
+
   useEffect(() => {
     invoke<UiState>("current_state").then(setState);
     invoke<Settings>("get_settings").then(setSettings).catch(() => {});
