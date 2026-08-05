@@ -520,7 +520,11 @@ function App() {
       </aside>
 
       <div className="main">
-        <div className="topbar">
+        {/* Draggable: the only other drag region is the 38px strip in the
+            sidebar, most of which the traffic lights occupy — leaving nowhere
+            obvious to grab. Interactive children keep their own events; a drag
+            only starts when the mousedown target is the bar itself. */}
+        <div className="topbar" data-tauri-drag-region>
           <div className="search-wrap">
             <span className="search-icon">
               <Search size={15} strokeWidth={2} />
