@@ -44,7 +44,7 @@ final class CaptureSession {
             do {
                 try await system.start()
             } catch {
-                Emit.error("system audio capture failed: \(error.localizedDescription) — grant Screen & System Audio Recording in System Settings → Privacy & Security")
+                Emit.error("system audio capture failed: \(error.localizedDescription) — allow Distil to record this computer's audio when macOS asks")
                 exit(1)
             }
             do {

@@ -1021,10 +1021,6 @@ const PRIVACY_PANES: &[(&str, &str)] = &[
         "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
     ),
     (
-        "screen",
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-    ),
-    (
         "calendar",
         "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
     ),

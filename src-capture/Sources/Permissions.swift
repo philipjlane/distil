@@ -1,5 +1,4 @@
 import AVFoundation
-import CoreGraphics
 import EventKit
 import Foundation
 
@@ -13,7 +12,6 @@ enum PermissionCheck {
         case .restricted: microphone = "restricted"
         @unknown default: microphone = "unknown"
         }
-        let screen = CGPreflightScreenCaptureAccess() ? "granted" : "not-granted"
         let calendar: String
         switch EKEventStore.authorizationStatus(for: .event) {
         case .fullAccess: calendar = "granted"
@@ -23,10 +21,12 @@ enum PermissionCheck {
         case .writeOnly: calendar = "write-only"
         @unknown default: calendar = "unknown"
         }
+        // System-audio capture is deliberately absent: Core Audio taps are
+        // gated by kTCCServiceAudioCapture, which has no public status API.
+        // It prompts by itself the first time a tap is created.
         Emit.event([
             "event": "permissions",
             "microphone": microphone,
-            "screenRecording": screen,
             "calendar": calendar,
         ])
     }

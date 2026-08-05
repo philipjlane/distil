@@ -8,6 +8,8 @@
 	<string>distil-capture</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Distil records your microphone during meetings you choose to record.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Distil records the other side of your meeting — the audio your Mac plays — so it can transcribe who said what.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Distil reads your calendar locally to offer recording when meetings start. Nothing leaves your Mac.</string>
 </dict>

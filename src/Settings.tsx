@@ -21,7 +21,7 @@ type Settings = {
   diarizeSpeakers: boolean;
 };
 
-type Permissions = { microphone: string; screenRecording: string; calendar?: string };
+type Permissions = { microphone: string; calendar?: string };
 
 type NotesPrompt = { text: string; isCustom: boolean; defaultText: string };
 
@@ -302,7 +302,6 @@ export function SettingsPane({
         </h3>
         <div className="perm-lines">
           {permLine("Microphone", permissions?.microphone, "microphone")}
-          {permLine("Screen & system audio", permissions?.screenRecording, "screen")}
           {permLine("Calendar (meeting prompts)", permissions?.calendar, "calendar")}
         </div>
       </div>

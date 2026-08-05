@@ -243,9 +243,9 @@ function App() {
     refreshMeetings();
 
     if (!localStorage.getItem("distil-onboarded")) {
-      invoke<{ microphone: string; screenRecording: string }>("permissions_status")
+      invoke<{ microphone: string }>("permissions_status")
         .then((p) => {
-          if (p.microphone !== "granted" || p.screenRecording !== "granted") {
+          if (p.microphone !== "granted") {
             setOnboarding(true);
           } else {
             localStorage.setItem("distil-onboarded", "1");

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Calendar, Check, Mic, Monitor } from "lucide-react";
+import { Calendar, Check, Mic } from "lucide-react";
 
-type Permissions = { microphone: string; screenRecording: string; calendar?: string };
+type Permissions = { microphone: string; calendar?: string };
 
 const STEPS = [
   {
@@ -11,13 +11,6 @@ const STEPS = [
     title: "Microphone",
     desc: "Your side of the conversation, as its own stream.",
     Icon: Mic,
-  },
-  {
-    key: "screenRecording" as const,
-    pane: "screen",
-    title: "Screen & system audio",
-    desc: "Everyone else's audio — captured separately for Me/Them attribution.",
-    Icon: Monitor,
   },
   {
     key: "calendar" as const,
@@ -62,7 +55,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         </div>
         <p className="onboard-intro">
           Distil records your meetings, transcribes them on-device and writes the
-          notes with a local model. macOS asks for three permissions first.
+          notes with a local model. macOS asks for two permissions first.
         </p>
         <div className="perm-steps">
           {STEPS.map((step) => (

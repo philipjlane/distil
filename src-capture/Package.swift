@@ -3,7 +3,9 @@ import PackageDescription
 
 let package = Package(
     name: "distil-capture",
-    platforms: [.macOS(.v14)],
+    // 14.2 is the floor for Core Audio process taps (AudioHardwareCreateProcessTap),
+    // which is how system audio is captured without the Screen Recording permission.
+    platforms: [.macOS("14.2")],
     targets: [
         .executableTarget(
             name: "distil-capture",

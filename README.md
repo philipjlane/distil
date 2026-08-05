@@ -22,7 +22,7 @@ cloud Ollama models.
 
 ## Build & install
 
-Requirements: macOS 14+, Xcode command-line tools, Rust, Node, CMake,
+Requirements: macOS 14.2+, Xcode command-line tools, Rust, Node, CMake,
 [Ollama](https://ollama.com) with at least one local model (e.g.
 `ollama pull qwen3.5:4b`).
 
@@ -32,8 +32,10 @@ npm run tauri build        # produces Distil.app + .dmg under src-tauri/target/r
 ```
 
 Copy `Distil.app` to `/Applications` and launch — it appears in the menu bar (no
-Dock icon). macOS will ask for Microphone, Screen & System Audio Recording, and
-Calendar permissions on first use. "Start Distil at login" lives in Settings.
+Dock icon). macOS will ask for Microphone and Calendar up front, and for audio
+recording the first time you record — Distil captures system audio with a Core
+Audio process tap, so it never asks for Screen Recording. "Start Distil at
+login" lives in Settings.
 
 For development: `npm run tauri dev`.
 
