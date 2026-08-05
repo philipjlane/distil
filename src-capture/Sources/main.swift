@@ -7,6 +7,11 @@ if arguments.contains("--check-permissions") {
     exit(0)
 }
 
+if arguments.contains("--check-system-audio") {
+    SystemAudioPermission.probeAndPrint()
+    exit(0)
+}
+
 if let index = arguments.firstIndex(of: "--request-permission"), index + 1 < arguments.count {
     let kind = arguments[index + 1]
     Task {
@@ -30,7 +35,7 @@ if arguments.contains("calendar") {
 guard let flagIndex = arguments.firstIndex(of: "--out-dir"), flagIndex + 1 < arguments.count else {
     FileHandle.standardError.write(
         Data(
-            "usage: distil-capture --out-dir <dir> | --check-permissions | --request-permission <microphone|screen|calendar>\n"
+            "usage: distil-capture --out-dir <dir> | --check-permissions | --check-system-audio | --request-permission <microphone|calendar>\n"
                 .utf8))
     exit(2)
 }

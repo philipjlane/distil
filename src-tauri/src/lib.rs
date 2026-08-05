@@ -338,6 +338,14 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
         let mic_silent = peak_of("micPeak").is_some_and(|p| p < SILENCE_PEAK);
         let system_silent = peak_of("systemPeak").is_some_and(|p| p < SILENCE_PEAK);
 
+        // A recording that actually captured system audio proves the permission
+        // is granted, so the Settings badge can be right without ever running
+        // the tone probe. Silence proves nothing — the meeting may simply have
+        // been quiet — so only the positive case updates the cache.
+        if peak_of("systemPeak").is_some() && !system_silent {
+            set_system_audio_access(app, "granted");
+        }
+
         let me = if mic_silent {
             Vec::new()
         } else {
@@ -972,7 +980,52 @@ async fn capture_permissions(app: &AppHandle, args: &[&str]) -> Result<Value, St
 
 #[tauri::command]
 async fn permissions_status(app: AppHandle) -> Result<Value, String> {
-    capture_permissions(&app, &["--check-permissions"]).await
+    let mut report = capture_permissions(&app, &["--check-permissions"]).await?;
+    // System audio is merged in from the cache rather than checked live: the
+    // probe plays a tone, which would be obnoxious on every Settings render.
+    if let Some(map) = report.as_object_mut() {
+        let settings = models::load_settings(&app);
+        map.insert("systemAudio".into(), Value::from(settings.system_audio_access));
+    }
+    Ok(report)
+}
+
+/// Measure whether system-audio capture actually works, and remember the answer.
+///
+/// Creating the tap is also what raises the macOS prompt, so this doubles as
+/// the request for the permission.
+#[tauri::command]
+async fn probe_system_audio(app: AppHandle) -> Result<Value, String> {
+    let output = app
+        .shell()
+        .sidecar("distil-capture")
+        .map_err(|e| e.to_string())?
+        .args(["--check-system-audio"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let status = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|v| v.get("event").and_then(Value::as_str) == Some("systemAudio"))
+        .and_then(|v| v.get("status").and_then(Value::as_str).map(str::to_string))
+        .ok_or_else(|| "capture helper produced no system-audio report".to_string())?;
+
+    // "unavailable" means the probe itself could not run (no output device,
+    // for instance) — that says nothing about the permission, so don't cache it.
+    if status != "unavailable" {
+        set_system_audio_access(&app, &status);
+    }
+    permissions_status(app).await
+}
+
+fn set_system_audio_access<R: Runtime>(app: &AppHandle<R>, status: &str) {
+    let mut settings = models::load_settings(app);
+    if settings.system_audio_access != status {
+        settings.system_audio_access = status.to_string();
+        let _ = models::save_settings(app, &settings);
+    }
 }
 
 /// Raise the real macOS prompt for one permission and report the new state.
@@ -1092,6 +1145,7 @@ pub fn run() {
             set_diarize_speakers,
             permissions_status,
             request_permission,
+            probe_system_audio,
             open_privacy_settings,
             get_autostart,
             set_autostart,

@@ -21,7 +21,7 @@ type Settings = {
   diarizeSpeakers: boolean;
 };
 
-type Permissions = { microphone: string; calendar?: string };
+type Permissions = { microphone: string; calendar?: string; systemAudio?: string };
 
 /// Settings pane name -> the field it reports under in a permissions report.
 const PERM_KEYS: Record<string, keyof Permissions> = {
@@ -103,6 +103,40 @@ export function SettingsPane({
         if (!granted(next[PERM_KEYS[pane]])) openPane();
       })
       .catch(openPane);
+  };
+
+  // System audio has no status API — macOS hands a denied tap silence rather
+  // than an error — so the answer is measured by playing a brief tone and
+  // listening for it, then cached. Hence a Check button rather than Allow.
+  const [checkingAudio, setCheckingAudio] = useState(false);
+  const checkSystemAudio = () => {
+    setCheckingAudio(true);
+    invoke<Permissions>("probe_system_audio")
+      .then(setPermissions)
+      .catch(() => {})
+      .finally(() => setCheckingAudio(false));
+  };
+
+  const systemAudioLine = () => {
+    const status = permissions?.systemAudio;
+    return (
+      <div className="perm-line">
+        <span>System audio (the other side of the call)</span>
+        {granted(status) ? (
+          <span className="ui-badge badge-teal">
+            <Check size={11} strokeWidth={2.5} /> Granted
+          </span>
+        ) : (
+          <button
+            className="ui-btn ui-btn-outline ui-btn-sm"
+            disabled={checkingAudio}
+            onClick={checkSystemAudio}
+          >
+            {checkingAudio ? "Checking…" : status === "denied" ? "Re-check" : "Allow"}
+          </button>
+        )}
+      </div>
+    );
   };
 
   const permLine = (label: string, status: string | undefined, pane: string) => (
@@ -328,6 +362,7 @@ export function SettingsPane({
         </h3>
         <div className="perm-lines">
           {permLine("Microphone", permissions?.microphone, "microphone")}
+          {systemAudioLine()}
           {permLine("Calendar (meeting prompts)", permissions?.calendar, "calendar")}
         </div>
       </div>

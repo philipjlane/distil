@@ -26,6 +26,14 @@ pub struct Settings {
     pub allow_cloud_models: bool,
     /// Cluster distinct voices in the system stream into Them 1..N.
     pub diarize_speakers: bool,
+    /// Last known result of the system-audio permission probe: "unknown",
+    /// "granted" or "denied".
+    ///
+    /// Cached rather than queried because Core Audio exposes no way to read
+    /// kTCCServiceAudioCapture — a denied tap runs normally and returns
+    /// silence. Measuring it means playing a tone, which is far too rude to do
+    /// every time the Settings pane opens, so the answer is remembered.
+    pub system_audio_access: String,
 }
 
 impl Default for Settings {
@@ -37,6 +45,7 @@ impl Default for Settings {
             ollama_model: None,
             allow_cloud_models: false,
             diarize_speakers: true,
+            system_audio_access: "unknown".into(),
         }
     }
 }
