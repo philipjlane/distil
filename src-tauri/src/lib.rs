@@ -952,13 +952,13 @@ fn set_diarize_speakers(app: AppHandle, enable: bool) -> Result<(), String> {
     models::save_settings(&app, &settings)
 }
 
-#[tauri::command]
-async fn permissions_status(app: AppHandle) -> Result<Value, String> {
+/// Run the capture helper and return the permissions report it prints.
+async fn capture_permissions(app: &AppHandle, args: &[&str]) -> Result<Value, String> {
     let output = app
         .shell()
         .sidecar("distil-capture")
         .map_err(|e| e.to_string())?
-        .args(["--check-permissions"])
+        .args(args)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -968,6 +968,26 @@ async fn permissions_status(app: AppHandle) -> Result<Value, String> {
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .find(|v| v.get("event").and_then(Value::as_str) == Some("permissions"))
         .ok_or_else(|| "capture helper produced no permissions report".to_string())
+}
+
+#[tauri::command]
+async fn permissions_status(app: AppHandle) -> Result<Value, String> {
+    capture_permissions(&app, &["--check-permissions"]).await
+}
+
+/// Raise the real macOS prompt for one permission and report the new state.
+///
+/// Distinct from `open_privacy_settings`, which only opens the pane: until the
+/// app has actually *requested* a permission, macOS does not list it there at
+/// all, so opening Settings first is a dead end.
+#[tauri::command]
+async fn request_permission(app: AppHandle, pane: String) -> Result<Value, String> {
+    let pane = PRIVACY_PANES
+        .iter()
+        .find(|(key, _)| *key == pane)
+        .map(|(key, _)| *key)
+        .ok_or("unknown permission")?;
+    capture_permissions(&app, &["--request-permission", pane]).await
 }
 
 #[derive(serde::Serialize)]
@@ -1071,6 +1091,7 @@ pub fn run() {
             set_keep_audio,
             set_diarize_speakers,
             permissions_status,
+            request_permission,
             open_privacy_settings,
             get_autostart,
             set_autostart,

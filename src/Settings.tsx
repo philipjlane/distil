@@ -23,6 +23,12 @@ type Settings = {
 
 type Permissions = { microphone: string; calendar?: string };
 
+/// Settings pane name -> the field it reports under in a permissions report.
+const PERM_KEYS: Record<string, keyof Permissions> = {
+  microphone: "microphone",
+  calendar: "calendar",
+};
+
 type NotesPrompt = { text: string; isCustom: boolean; defaultText: string };
 
 function Switch({ on, onToggle }: { on: boolean; onToggle: (next: boolean) => void }) {
@@ -86,6 +92,19 @@ export function SettingsPane({
 
   const granted = (status: string | undefined) => status === "granted";
 
+  // Same two-step as onboarding: prompt first, because until Distil has asked
+  // once macOS won't list it in Privacy & Security for anyone to toggle.
+  const allow = (pane: string) => {
+    const openPane = () =>
+      invoke("open_privacy_settings", { pane }).catch(() => {});
+    invoke<Permissions>("request_permission", { pane })
+      .then((next) => {
+        setPermissions(next);
+        if (!granted(next[PERM_KEYS[pane]])) openPane();
+      })
+      .catch(openPane);
+  };
+
   const permLine = (label: string, status: string | undefined, pane: string) => (
     <div className="perm-line">
       <span>{label}</span>
@@ -96,9 +115,9 @@ export function SettingsPane({
       ) : (
         <button
           className="ui-btn ui-btn-outline ui-btn-sm"
-          onClick={() => invoke("open_privacy_settings", { pane })}
+          onClick={() => allow(pane)}
         >
-          Open System Settings
+          Allow
         </button>
       )}
     </div>

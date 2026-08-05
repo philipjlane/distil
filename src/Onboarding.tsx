@@ -40,6 +40,23 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     (perms?.[key] ?? "") === "granted";
   const allGranted = STEPS.every((s) => granted(s.key));
 
+  // Raise the real prompt. Only fall back to System Settings if that didn't
+  // grant it — which is also the point at which Settings starts listing Distil,
+  // since the request is what registers the app with TCC.
+  const [pending, setPending] = useState<string | null>(null);
+  const allow = (step: (typeof STEPS)[number]) => {
+    setPending(step.key);
+    const openPane = () =>
+      invoke("open_privacy_settings", { pane: step.pane }).catch(() => {});
+    invoke<Permissions>("request_permission", { pane: step.pane })
+      .then((next) => {
+        setPerms(next);
+        if ((next[step.key] ?? "") !== "granted") openPane();
+      })
+      .catch(openPane)
+      .finally(() => setPending(null));
+  };
+
   return (
     <div className="onboard-wrap">
       <div className="onboard-strip" data-tauri-drag-region />
@@ -74,9 +91,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               ) : (
                 <button
                   className="ui-btn ui-btn-outline ui-btn-sm"
-                  onClick={() => invoke("open_privacy_settings", { pane: step.pane })}
+                  disabled={pending !== null}
+                  onClick={() => allow(step)}
                 >
-                  Allow
+                  {pending === step.key ? "Waiting…" : "Allow"}
                 </button>
               )}
             </div>

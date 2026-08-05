@@ -7,6 +7,15 @@ if arguments.contains("--check-permissions") {
     exit(0)
 }
 
+if let index = arguments.firstIndex(of: "--request-permission"), index + 1 < arguments.count {
+    let kind = arguments[index + 1]
+    Task {
+        await PermissionRequest.runAndPrint(kind: kind)
+        exit(0)
+    }
+    dispatchMain()
+}
+
 if arguments.contains("calendar") {
     var hours = 12.0
     if let index = arguments.firstIndex(of: "--hours"), index + 1 < arguments.count,
@@ -19,7 +28,10 @@ if arguments.contains("calendar") {
 }
 
 guard let flagIndex = arguments.firstIndex(of: "--out-dir"), flagIndex + 1 < arguments.count else {
-    FileHandle.standardError.write(Data("usage: distil-capture --out-dir <dir> | --check-permissions\n".utf8))
+    FileHandle.standardError.write(
+        Data(
+            "usage: distil-capture --out-dir <dir> | --check-permissions | --request-permission <microphone|screen|calendar>\n"
+                .utf8))
     exit(2)
 }
 
