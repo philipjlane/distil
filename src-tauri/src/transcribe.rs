@@ -194,11 +194,8 @@ fn whisper_segments(
 
     let mut segments = Vec::with_capacity(state.full_n_segments() as usize);
     for segment in state.as_iter() {
-        let text = segment
-            .to_str_lossy()
-            .map_err(|e| e.to_string())?
-            .trim()
-            .to_string();
+        let text = segment.to_str_lossy().map_err(|e| e.to_string())?;
+        let text = strip_dialogue_dash(text.trim()).to_string();
         if text.is_empty() || is_noise_annotation(&text) {
             continue;
         }
@@ -236,6 +233,16 @@ fn parakeet_segments(
         });
     }
     Ok(segments)
+}
+
+/// Whisper writes subtitle-style dialogue dashes ("- Yes.") at some speaker
+/// turns, more often on packed speech. The transcript labels speakers itself,
+/// so the dash is noise.
+fn strip_dialogue_dash(text: &str) -> &str {
+    match text.strip_prefix(['-', '\u{2013}', '\u{2014}']) {
+        Some(rest) if rest.starts_with(' ') => rest.trim_start(),
+        _ => text,
+    }
 }
 
 /// Whisper marks non-speech as `*music*`, `[Applause]`, `(laughs)`, `♪ … ♪`.
@@ -431,6 +438,14 @@ mod tests {
         assert!(is_noise_annotation("(laughs)"));
         assert!(is_noise_annotation("♪ ♪ ♪"));
         assert!(!is_noise_annotation("Politics of envy."));
+    }
+
+    #[test]
+    fn dialogue_dashes_are_stripped() {
+        assert_eq!(strip_dialogue_dash("- Yes, ship it."), "Yes, ship it.");
+        assert_eq!(strip_dialogue_dash("\u{2013} Agreed."), "Agreed.");
+        assert_eq!(strip_dialogue_dash("-5 degrees outside."), "-5 degrees outside.");
+        assert_eq!(strip_dialogue_dash("Mid - sentence dash."), "Mid - sentence dash.");
     }
 
     #[test]
