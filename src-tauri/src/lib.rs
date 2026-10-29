@@ -9,7 +9,7 @@ pub mod transcribe;
 pub mod vad;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tauri::{
@@ -73,6 +73,137 @@ impl Default for AppState {
 struct RecordingSession {
     child: CommandChild,
     started: std::time::Instant,
+}
+
+const LIVE_LABEL: &str = "live";
+
+/// How long the end of a recording waits for the live preview's last pass
+/// before moving on without it.
+const LIVE_FINISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The live transcript of the current (or latest) recording. Its own state,
+/// apart from `AppState`, so nothing on the live path can hold up a recording.
+/// The recording's reader task owns the loop's `Handle`; this holds only what
+/// the rest of the app needs to reach it.
+#[derive(Default)]
+struct LiveSlot(Mutex<LiveRun>);
+
+#[derive(Default)]
+struct LiveRun {
+    /// Stops the loop that is running, if one is.
+    canceller: Option<live::Canceller>,
+    /// What the preview has said so far, for a panel that opens late.
+    snapshot: Option<Arc<Mutex<live::Snapshot>>>,
+}
+
+/// Stop the live loop at once, without a final pass (panel closed, or the
+/// preview switched off).
+fn cancel_live<R: Runtime>(app: &AppHandle<R>) {
+    let canceller = app.state::<LiveSlot>().0.lock().unwrap().canceller.take();
+    if let Some(canceller) = canceller {
+        canceller.cancel();
+    }
+}
+
+/// Close the live window, if it is open. Closing it also stops the loop.
+fn close_live_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window(LIVE_LABEL) {
+        let _ = window.close();
+    }
+}
+
+/// Open the always-on-top live transcript window at the top right of the
+/// primary screen, without taking focus from the call. Does nothing if it is
+/// already open. Blocking: builds on the main thread and waits for it.
+fn open_live_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    if app.get_webview_window(LIVE_LABEL).is_some() {
+        return Ok(());
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let main_thread_app = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(build_live_window(&main_thread_app));
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .map_err(|e| format!("live window did not open: {e}"))?
+}
+
+fn build_live_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    const WIDTH: f64 = 340.0;
+    const HEIGHT: f64 = 440.0;
+    const MARGIN: f64 = 16.0;
+    // Unfocused, because the user is in the call. A hidden window shown again
+    // takes focus, so each recording gets a new one instead (see the close
+    // handler in `run`).
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        LIVE_LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Live transcript")
+    .inner_size(WIDTH, HEIGHT)
+    .min_inner_size(260.0, 200.0)
+    .resizable(true)
+    .always_on_top(true)
+    .visible_on_all_workspaces(true)
+    .focused(false);
+    // Top right of the usable area (below the menu bar), in logical pixels.
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let area = monitor.work_area();
+        let x = (f64::from(area.position.x) + f64::from(area.size.width)) / scale - WIDTH - MARGIN;
+        let y = f64::from(area.position.y) / scale + MARGIN;
+        builder = builder.position(x, y);
+    }
+    builder.build().map(|_| ()).map_err(|e| e.to_string())
+}
+
+fn emit_live<R: Runtime>(app: &AppHandle<R>, update: &live::Update) {
+    match update {
+        live::Update::Status(status) => {
+            let _ = app.emit("live-status", status);
+        }
+        live::Update::Transcript(event) => {
+            let _ = app.emit("live-transcript", event);
+        }
+    }
+}
+
+/// Start the live transcript for the recording in `dir`. Best effort: it runs
+/// on its own thread, and whatever goes wrong there leaves the recording alone.
+/// The caller owns the handle: finish it when the recording ends, or drop it to
+/// stop the preview.
+fn start_live<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> live::Handle {
+    let snapshot = Arc::new(Mutex::new(live::Snapshot::default()));
+    let handle = live::spawn(
+        {
+            let app = app.clone();
+            move || {
+                open_live_window(&app)?;
+                let model = models::ensure_model(&app, live::MODEL)?;
+                live::WhisperDecoder::load(&model)
+            }
+        },
+        dir.to_path_buf(),
+        snapshot.clone(),
+        {
+            let app = app.clone();
+            move |update| emit_live(&app, update)
+        },
+    );
+    // A loop left over from an earlier recording that is still finishing must
+    // not talk over this one.
+    let previous = {
+        let slot = app.state::<LiveSlot>();
+        let mut run = slot.0.lock().unwrap();
+        run.snapshot = Some(snapshot);
+        run.canceller.replace(handle.canceller())
+    };
+    if let Some(previous) = previous {
+        previous.cancel();
+    }
+    handle
 }
 
 /// Show/hide the tray panel window, positioned under the tray icon.
@@ -151,6 +282,7 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>, attendee
     }
 
     let title = title.map(calendar::sanitize_title).unwrap_or_else(|| "Meeting".to_string());
+    let live_transcript = models::load_settings(app).live_transcript;
     let spawned = (|| -> Result<_, String> {
         let dir = meetings_root(app)?.join(format!(
             "{} {}",
@@ -158,11 +290,16 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>, attendee
             title
         ));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let mut args = vec!["--out-dir".to_string(), dir.to_string_lossy().into_owned()];
+        if live_transcript {
+            // The sidecar mirrors each stream into a raw PCM file for the preview.
+            args.push("--live-pcm".to_string());
+        }
         let command = app
             .shell()
             .sidecar("distil-capture")
             .map_err(|e| e.to_string())?
-            .args(["--out-dir", &dir.to_string_lossy()]);
+            .args(args);
         let (rx, child) = command.spawn().map_err(|e| e.to_string())?;
         Ok((dir, rx, child))
     })();
@@ -180,6 +317,7 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>, attendee
         started: std::time::Instant::now(),
     });
     emit_state(app, UiState::Recording { dir: dir.display().to_string() });
+    let mut live = live_transcript.then(|| start_live(app, &dir));
 
     let app = app.clone();
     let started_at = chrono::Local::now();
@@ -203,6 +341,11 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>, attendee
                                     .and_then(Value::as_str)
                                     .map(String::from)
                             }
+                            // Trouble that costs nothing but the live preview.
+                            Some("warning") => eprintln!(
+                                "distil-capture: {}",
+                                parsed.get("message").and_then(Value::as_str).unwrap_or("warning")
+                            ),
                             _ => {}
                         }
                         let _ = app.emit("capture-event", &parsed);
@@ -213,6 +356,7 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>, attendee
                 }
                 CommandEvent::Terminated(status) => {
                     app.state::<Mutex<AppState>>().lock().unwrap().session = None;
+                    let live = live.take();
                     let clean_exit = status.code == Some(0) && error.is_none();
                     if clean_exit {
                         let meta = serde_json::json!({
@@ -233,10 +377,19 @@ fn start_recording<R: Runtime>(app: &AppHandle<R>, title: Option<&str>, attendee
                         let app = app.clone();
                         let dir = dir.clone();
                         tauri::async_runtime::spawn_blocking(move || {
+                            // The sidecar has exited, so the PCM files are complete: let
+                            // the preview commit its last words, then drop them.
+                            if let Some(live) = live {
+                                live.finish(LIVE_FINISH_TIMEOUT);
+                            }
+                            if !models::load_settings(&app).keep_audio {
+                                live::remove_pcm_files(&dir);
+                            }
                             run_transcription(&app, &dir);
                         });
                     } else {
                         // Nothing usable was captured; don't leave an empty husk.
+                        drop(live);
                         let _ = std::fs::remove_dir_all(&dir);
                         emit_state(
                             &app,
@@ -1266,6 +1419,39 @@ fn set_diarize_speakers(app: AppHandle, enable: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_live_transcript(app: AppHandle, enable: bool) -> Result<(), String> {
+    let mut settings = models::load_settings(&app);
+    settings.live_transcript = enable;
+    models::save_settings(&app, &settings)?;
+    // Switching off also takes down a preview already on screen; switching on
+    // starts with the next recording.
+    if !enable {
+        close_live_window(&app);
+        cancel_live(&app);
+    }
+    Ok(())
+}
+
+/// What the live preview has said so far, for a panel that opened after some
+/// of it was emitted.
+#[tauri::command]
+fn live_snapshot(slot: tauri::State<'_, LiveSlot>) -> Option<live::Snapshot> {
+    let snapshot = slot.0.lock().unwrap().snapshot.clone()?;
+    let snapshot = snapshot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    Some(snapshot)
+}
+
+/// The live panel closes itself once the notes are done, unless another
+/// recording has started since.
+#[tauri::command]
+fn close_live(app: AppHandle) {
+    let recording = app.state::<Mutex<AppState>>().lock().unwrap().session.is_some();
+    if !recording {
+        close_live_window(&app);
+    }
+}
+
+#[tauri::command]
 fn set_detect_meetings(app: AppHandle, enable: bool) -> Result<(), String> {
     let mut settings = models::load_settings(&app);
     settings.detect_meetings = enable;
@@ -1450,6 +1636,7 @@ pub fn run() {
             None,
         ))
         .manage(Mutex::new(AppState::default()))
+        .manage(LiveSlot::default())
         .invoke_handler(tauri::generate_handler![
             current_state,
             toggle_recording,
@@ -1477,6 +1664,9 @@ pub fn run() {
             set_skip_silence,
             set_keep_audio,
             set_diarize_speakers,
+            set_live_transcript,
+            live_snapshot,
+            close_live,
             set_detect_meetings,
             set_auto_stop_recording,
             permissions_status,
@@ -1520,7 +1710,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            // Closing a window hides it; the app lives in the tray.
+            // The live window is closed for real: a window that was only hidden
+            // takes focus when shown again, and the next recording would steal
+            // it from the call. Closing it ends the preview for this recording.
+            tauri::WindowEvent::CloseRequested { .. } if window.label() == LIVE_LABEL => {
+                cancel_live(window.app_handle());
+            }
+            // Closing any other window hides it; the app lives in the tray.
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 let _ = window.hide();
                 api.prevent_close();

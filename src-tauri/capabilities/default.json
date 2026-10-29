@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main and tray windows",
-  "windows": ["main", "tray"],
+  "description": "Capability for the main, tray and live transcript windows",
+  "windows": ["main", "tray", "live"],
   "permissions": [
     "core:default",
     "core:window:allow-hide",
