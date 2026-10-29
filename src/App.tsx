@@ -60,6 +60,8 @@ type Settings = {
   openaiModel: string | null;
   allowCloudModels: boolean;
   diarizeSpeakers: boolean;
+  detectMeetings: boolean;
+  autoStopRecording: boolean;
 };
 
 type UpcomingMeeting = { title: string; startsAtDisplay: string } | null;

@@ -22,6 +22,8 @@ type Settings = {
   openaiModel: string | null;
   allowCloudModels: boolean;
   diarizeSpeakers: boolean;
+  detectMeetings: boolean;
+  autoStopRecording: boolean;
 };
 
 type Permissions = { microphone: string; calendar?: string; systemAudio?: string };
@@ -389,6 +391,47 @@ export function SettingsPane({
               <div className="switch-title">Start Distil at login</div>
               <div className="switch-desc">
                 Lives in the menu bar, ready when meetings start.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="ui-card section-card">
+        <h3 className="app-h2 card-h" style={{ marginBottom: 14 }}>
+          Calls
+        </h3>
+        <div className="switch-stack">
+          <div className="switch-row">
+            <Switch
+              on={settings.detectMeetings}
+              onToggle={(enable) => {
+                invoke("set_detect_meetings", { enable }).catch(() => {});
+                onSettingsChange({ ...settings, detectMeetings: enable });
+              }}
+            />
+            <div className="switch-main">
+              <div className="switch-title">Detect calls</div>
+              <div className="switch-desc">
+                Notices when Teams, Zoom or another call app starts using the
+                microphone and offers to record. Browsers count only when your
+                calendar shows a meeting.
+              </div>
+            </div>
+          </div>
+          <div className="switch-row">
+            <Switch
+              on={settings.autoStopRecording}
+              onToggle={(enable) => {
+                invoke("set_auto_stop_recording", { enable }).catch(() => {});
+                onSettingsChange({ ...settings, autoStopRecording: enable });
+              }}
+            />
+            <div className="switch-main">
+              <div className="switch-title">Stop when the call ends</div>
+              <div className="switch-desc">
+                Stops recording 15 seconds after every call app releases the
+                microphone.
               </div>
             </div>
           </div>

@@ -25,6 +25,7 @@ function latestStamp(iso: string | null): string {
 export function TrayPanel() {
   const [state, setState] = useState<UiState>({ phase: "idle" });
   const [upcoming, setUpcoming] = useState<UpcomingMeeting>(null);
+  const [detected, setDetected] = useState<string | null>(null);
   const [latest, setLatest] = useState<Meeting | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -52,6 +53,16 @@ export function TrayPanel() {
       unlisten.then((stop) => stop());
     };
   }, [refresh]);
+
+  useEffect(() => {
+    invoke<string | null>("detected_call").then(setDetected).catch(() => {});
+    const unlisten = listen<string | null>("meeting-detected", (event) => {
+      setDetected(event.payload);
+    });
+    return () => {
+      unlisten.then((stop) => stop());
+    };
+  }, []);
 
   useEffect(() => {
     const height = panelRef.current?.offsetHeight;
@@ -105,7 +116,32 @@ export function TrayPanel() {
         />
         {recording ? `Stop recording · ${mmss}` : "Start recording"}
       </button>
-      {upcoming && !recording && (
+      {detected && !recording && (
+        <>
+          <div className="tray-label">Now</div>
+          <button
+            className="ui-menu-item"
+            onClick={() => {
+              invoke("record_detected");
+              getCurrentWindow().hide().catch(() => {});
+            }}
+          >
+            <span
+              style={{
+                flex: 1,
+                textAlign: "left",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {upcoming ? `${upcoming.title} on ${detected}` : `${detected} call in progress`}
+            </span>
+            <span className="tray-action">Record</span>
+          </button>
+        </>
+      )}
+      {upcoming && !detected && !recording && (
         <>
           <div className="tray-label">Up next</div>
           <button

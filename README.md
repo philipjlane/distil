@@ -20,6 +20,9 @@ cloud Ollama models.
   meetings
 - **Calendar-aware** — reads your macOS Calendar locally (no OAuth) and offers to
   record when a real meeting is about to start, with the folder pre-named
+- **Call detection** - notices when Teams, Zoom or another call app starts using
+  the microphone and offers to record, then offers to stop (or stops, if you ask
+  it to) when the call ends
 - **A real library** — browse meetings, rendered notes/transcripts, copy, reveal in
   Finder, delete to Trash
 

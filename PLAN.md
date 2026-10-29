@@ -133,6 +133,28 @@ per-model, user-made decision.
   overlapping speech degrades everyone's diarization, including ours. Explicit
   non-approach: joining meetings as a bot for per-participant streams —
   cloud-service territory, rejected.
+- **M7: Meeting detection (v1.3)**: notice a call without needing a calendar entry.
+  A second sidecar mode, `distil-capture watch-mic`, polls Core Audio's process
+  objects every 2 s and reports which processes are capturing input (bundle id +
+  pid). It reads metadata about other processes, not audio, so it should need no
+  permission of its own. The host feeds each report to a pure, unit-tested
+  `Detector` (`meetings.rs`). A known call app (Teams, Zoom, Webex, Slack,
+  FaceTime, Discord) seen in two consecutive reports counts as active; when one
+  becomes active and nothing is recording, a notification and a tray row offer
+  to record it (named after the calendar meeting if one is on, else "Teams call").
+  Browsers also open the mic for things that aren't calls, so they only count
+  while a calendar meeting is inside its prompt window. During a recording the
+  detector remembers every call app it sees; once all of them have been off the
+  mic for 15 s it asks whether to stop, or stops by itself if "Stop when the call
+  ends" is on (off by default, so a recording never ends unasked). Prompt, not
+  auto-start: Distil never begins recording without a click. Both switches live
+  in Settings.
+  Teams in the calendar: EventKit's location, notes and URL now go to Rust raw, and
+  `calendar.rs` finds the video link (previously done in Swift, untestable). It
+  recognises `teams.microsoft.com` and `teams.live.com` links, unwraps Outlook
+  Safe Links (`*.safelinks.protection.outlook.com/?url=...`) to the link inside,
+  and treats a location of "Microsoft Teams Meeting" as a meeting even when
+  Outlook left the link only in the body.
 
 ## Non-goals (v1)
 
@@ -144,4 +166,5 @@ search · in-app note editing · Windows/Linux · any cloud or sync.
 
 - Whisper model size vs. speed default — tune on real recordings in M2.
 - Auto-start recording when a meeting app produces audio (no calendar event needed) —
-  nice v2 candidate, complements M5.
+  addressed by M7 as a prompt rather than an auto-start; revisit only if the prompt
+  proves too easy to miss.
