@@ -1,5 +1,6 @@
 pub mod calendar;
 pub mod diarize;
+pub mod live;
 pub mod llm;
 pub mod meetings;
 pub mod models;
