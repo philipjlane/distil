@@ -12,7 +12,9 @@ cloud Ollama models.
 - **Two-stream capture** — your mic and everyone else's audio recorded separately,
   giving Me/Them speaker attribution for free (plus a bleed filter for
   speakers-without-headphones setups)
-- **On-device transcription** — whisper.cpp with Metal, models downloaded on first use
+- **On-device transcription** — whisper.cpp with Metal, or NVIDIA's Parakeet TDT
+  (CC-BY-4.0, 25 European languages) for speed; silence is skipped before
+  transcribing; models downloaded on first use
 - **Local distillation** — notes written by the largest local Ollama model, or one
   you pick; cloud models are strictly opt-in and clearly badged. Any
   OpenAI-compatible local server (oMLX, mlx-lm, llama.cpp, LM Studio) works too, and
