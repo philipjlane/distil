@@ -5,6 +5,7 @@ pub mod meetings;
 pub mod models;
 pub mod ollama;
 pub mod transcribe;
+pub mod vad;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -307,12 +308,68 @@ fn distil_core<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> Result<(), String>
     Ok(())
 }
 
+/// What transcribed a meeting, for meta.json. The fallbacks in
+/// `build_transcriber` mean it can differ from what the settings ask for.
+struct TranscriberUsed {
+    kind: transcribe::TranscriberKind,
+    skipped_silence: bool,
+}
+
+/// Fetch the models the settings ask for and load the transcriber.
+/// Blocking; call while holding PIPELINE_GATE. A meeting is never lost to a
+/// model that can't be fetched: without the VAD model whisper runs over the
+/// whole stream, and Parakeet, which can't run without it, hands over to whisper.
+fn build_transcriber<R: Runtime>(
+    app: &AppHandle<R>,
+    settings: &models::Settings,
+) -> Result<(transcribe::Transcriber, TranscriberUsed), String> {
+    let parakeet = settings.transcriber == transcribe::TranscriberKind::Parakeet;
+    let vad_model = if parakeet || settings.skip_silence {
+        match models::ensure_vad_model(app) {
+            Ok(path) => Some(path),
+            Err(message) => {
+                eprintln!("silence skipping unavailable: {message}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if parakeet {
+        match &vad_model {
+            Some(vad_model) => match models::ensure_parakeet_model(app)
+                .and_then(|dir| transcribe::Transcriber::parakeet(&dir, vad_model))
+            {
+                Ok(transcriber) => {
+                    let used = TranscriberUsed {
+                        kind: transcribe::TranscriberKind::Parakeet,
+                        skipped_silence: true,
+                    };
+                    return Ok((transcriber, used));
+                }
+                Err(message) => eprintln!("Parakeet unavailable, using whisper: {message}"),
+            },
+            None => eprintln!("Parakeet needs the VAD model, using whisper"),
+        }
+    }
+
+    // Parakeet users who fall back get whisper's own setting for silence.
+    let whisper_vad = vad_model.as_deref().filter(|_| settings.skip_silence);
+    let model = models::ensure_whisper_model(app)?;
+    let transcriber = transcribe::Transcriber::whisper(&model, whisper_vad)?;
+    let used = TranscriberUsed {
+        kind: transcribe::TranscriberKind::Whisper,
+        skipped_silence: whisper_vad.is_some(),
+    };
+    Ok((transcriber, used))
+}
+
 fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
     let _gate = PIPELINE_GATE.lock().unwrap();
 
     let result = (|| -> Result<(), String> {
         let settings = models::load_settings(app);
-        let model = models::ensure_whisper_model(app)?;
 
         // A stream whose peak never left the noise floor is dead — skip it
         // rather than let whisper hallucinate over silence.
@@ -338,15 +395,24 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
             set_system_audio_access(app, "granted");
         }
 
-        let me = if mic_silent {
-            Vec::new()
+        // One transcriber for both streams, loaded only if there is audio to
+        // transcribe, and gone before diarization loads its models.
+        let (me, them, used) = if mic_silent && system_silent {
+            (Vec::new(), Vec::new(), None)
         } else {
-            transcribe::transcribe(&model, &dir.join("audio-mic.wav"))?
-        };
-        let them = if system_silent {
-            Vec::new()
-        } else {
-            transcribe::transcribe(&model, &dir.join("audio-system.wav"))?
+            let (mut transcriber, used) = build_transcriber(app, &settings)?;
+            let me = if mic_silent {
+                Vec::new()
+            } else {
+                transcriber.transcribe(&dir.join("audio-mic.wav"))?
+            };
+            let them = if system_silent {
+                Vec::new()
+            } else {
+                transcriber.transcribe(&dir.join("audio-system.wav"))?
+            };
+            drop(transcriber);
+            (me, them, Some(used))
         };
         let me = transcribe::drop_mic_bleed(me, &them);
 
@@ -389,7 +455,14 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
         let meta_path = dir.join("meta.json");
         if let Ok(bytes) = std::fs::read(&meta_path) {
             if let Ok(mut meta) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                meta["whisperModel"] = serde_json::Value::from(settings.whisper_model.clone());
+                if let Some(used) = &used {
+                    meta["transcriber"] = serde_json::to_value(used.kind).unwrap_or_default();
+                    if used.kind == transcribe::TranscriberKind::Whisper {
+                        meta["whisperModel"] =
+                            serde_json::Value::from(settings.whisper_model.clone());
+                    }
+                    meta["skippedSilence"] = serde_json::Value::from(used.skipped_silence);
+                }
                 meta["transcribedAt"] =
                     serde_json::Value::from(chrono::Local::now().to_rfc3339());
                 let _ = std::fs::write(
