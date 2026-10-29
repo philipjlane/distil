@@ -20,11 +20,18 @@ final class CaptureSession {
     private var stopping = false
     private let stateQueue = DispatchQueue(label: "capture-state")
 
-    init(outDir: URL) throws {
+    /// With `livePCM`, each stream is also mirrored into a raw PCM file
+    /// (`live-mic.pcm`, `live-system.pcm`) that the host reads for the live
+    /// transcript. The names are a contract with `live.rs`.
+    init(outDir: URL, livePCM: Bool = false) throws {
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
         self.outDir = outDir
-        micWriter = try ConvertingWavWriter(url: outDir.appendingPathComponent("audio-mic.wav"))
-        systemWriter = try ConvertingWavWriter(url: outDir.appendingPathComponent("audio-system.wav"))
+        micWriter = try ConvertingWavWriter(
+            url: outDir.appendingPathComponent("audio-mic.wav"),
+            pcmURL: livePCM ? outDir.appendingPathComponent("live-mic.pcm") : nil)
+        systemWriter = try ConvertingWavWriter(
+            url: outDir.appendingPathComponent("audio-system.wav"),
+            pcmURL: livePCM ? outDir.appendingPathComponent("live-system.pcm") : nil)
         mic = MicRecorder(writer: micWriter)
         system = SystemAudioRecorder(writer: systemWriter)
     }
