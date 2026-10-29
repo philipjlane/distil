@@ -25,6 +25,7 @@ type Settings = {
   openaiModel: string | null;
   allowCloudModels: boolean;
   diarizeSpeakers: boolean;
+  liveTranscript: boolean;
   detectMeetings: boolean;
   autoStopRecording: boolean;
 };
@@ -263,6 +264,23 @@ export function SettingsPane({
               Clusters distinct voices into Them 1 / Them 2 / … and lets the
               distiller infer names from the call. First use downloads ~45 MB of
               local models.
+            </div>
+          </div>
+        </div>
+        <div className="switch-row" style={{ marginTop: 16 }}>
+          <Switch
+            on={settings.liveTranscript}
+            onToggle={(enable) => {
+              invoke("set_live_transcript", { enable }).catch(() => {});
+              onSettingsChange({ ...settings, liveTranscript: enable });
+            }}
+          />
+          <div className="switch-main">
+            <div className="switch-title">Show a live transcript while recording</div>
+            <div className="switch-desc">
+              A rough, English-only preview in a small floating window. The saved
+              transcript is still made from the full recording afterwards. First use
+              downloads a 43 MB model.
             </div>
           </div>
         </div>
