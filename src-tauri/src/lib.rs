@@ -5,6 +5,7 @@ pub mod meetings;
 pub mod models;
 pub mod ollama;
 pub mod transcribe;
+pub mod vad;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -307,12 +308,68 @@ fn distil_core<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> Result<(), String>
     Ok(())
 }
 
+/// What transcribed a meeting, for meta.json. The fallbacks in
+/// `build_transcriber` mean it can differ from what the settings ask for.
+struct TranscriberUsed {
+    kind: transcribe::TranscriberKind,
+    skipped_silence: bool,
+}
+
+/// Fetch the models the settings ask for and load the transcriber.
+/// Blocking; call while holding PIPELINE_GATE. A meeting is never lost to a
+/// model that can't be fetched: without the VAD model whisper runs over the
+/// whole stream, and Parakeet, which can't run without it, hands over to whisper.
+fn build_transcriber<R: Runtime>(
+    app: &AppHandle<R>,
+    settings: &models::Settings,
+) -> Result<(transcribe::Transcriber, TranscriberUsed), String> {
+    let parakeet = settings.transcriber == transcribe::TranscriberKind::Parakeet;
+    let vad_model = if parakeet || settings.skip_silence {
+        match models::ensure_vad_model(app) {
+            Ok(path) => Some(path),
+            Err(message) => {
+                eprintln!("silence skipping unavailable: {message}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if parakeet {
+        match &vad_model {
+            Some(vad_model) => match models::ensure_parakeet_model(app)
+                .and_then(|dir| transcribe::Transcriber::parakeet(&dir, vad_model))
+            {
+                Ok(transcriber) => {
+                    let used = TranscriberUsed {
+                        kind: transcribe::TranscriberKind::Parakeet,
+                        skipped_silence: true,
+                    };
+                    return Ok((transcriber, used));
+                }
+                Err(message) => eprintln!("Parakeet unavailable, using whisper: {message}"),
+            },
+            None => eprintln!("Parakeet needs the VAD model, using whisper"),
+        }
+    }
+
+    // Parakeet users who fall back get whisper's own setting for silence.
+    let whisper_vad = vad_model.as_deref().filter(|_| settings.skip_silence);
+    let model = models::ensure_whisper_model(app)?;
+    let transcriber = transcribe::Transcriber::whisper(&model, whisper_vad)?;
+    let used = TranscriberUsed {
+        kind: transcribe::TranscriberKind::Whisper,
+        skipped_silence: whisper_vad.is_some(),
+    };
+    Ok((transcriber, used))
+}
+
 fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
     let _gate = PIPELINE_GATE.lock().unwrap();
 
     let result = (|| -> Result<(), String> {
         let settings = models::load_settings(app);
-        let model = models::ensure_whisper_model(app)?;
 
         // A stream whose peak never left the noise floor is dead — skip it
         // rather than let whisper hallucinate over silence.
@@ -338,15 +395,24 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
             set_system_audio_access(app, "granted");
         }
 
-        let me = if mic_silent {
-            Vec::new()
+        // One transcriber for both streams, loaded only if there is audio to
+        // transcribe, and gone before diarization loads its models.
+        let (me, them, used) = if mic_silent && system_silent {
+            (Vec::new(), Vec::new(), None)
         } else {
-            transcribe::transcribe(&model, &dir.join("audio-mic.wav"))?
-        };
-        let them = if system_silent {
-            Vec::new()
-        } else {
-            transcribe::transcribe(&model, &dir.join("audio-system.wav"))?
+            let (mut transcriber, used) = build_transcriber(app, &settings)?;
+            let me = if mic_silent {
+                Vec::new()
+            } else {
+                transcriber.transcribe(&dir.join("audio-mic.wav"))?
+            };
+            let them = if system_silent {
+                Vec::new()
+            } else {
+                transcriber.transcribe(&dir.join("audio-system.wav"))?
+            };
+            drop(transcriber);
+            (me, them, Some(used))
         };
         let me = transcribe::drop_mic_bleed(me, &them);
 
@@ -389,7 +455,14 @@ fn run_transcription<R: Runtime>(app: &AppHandle<R>, dir: &Path) {
         let meta_path = dir.join("meta.json");
         if let Ok(bytes) = std::fs::read(&meta_path) {
             if let Ok(mut meta) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                meta["whisperModel"] = serde_json::Value::from(settings.whisper_model.clone());
+                if let Some(used) = &used {
+                    meta["transcriber"] = serde_json::to_value(used.kind).unwrap_or_default();
+                    if used.kind == transcribe::TranscriberKind::Whisper {
+                        meta["whisperModel"] =
+                            serde_json::Value::from(settings.whisper_model.clone());
+                    }
+                    meta["skippedSilence"] = serde_json::Value::from(used.skipped_silence);
+                }
                 meta["transcribedAt"] =
                     serde_json::Value::from(chrono::Local::now().to_rfc3339());
                 let _ = std::fs::write(
@@ -1100,9 +1173,14 @@ const WHISPER_MODELS: &[(&str, &str, u64)] = &[
     ("tiny.en-q8_0", "Fastest, English-only — for quick tests", 43),
 ];
 
+/// The Parakeet choice beside the whisper models: name, blurb, size on disk.
+const PARAKEET_MODEL: (&str, &str, u64) =
+    ("parakeet-tdt-0.6b-v3", "Fastest, 25 European languages", 670);
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WhisperModelInfo {
+struct TranscriptionModelInfo {
+    engine: transcribe::TranscriberKind,
     name: String,
     description: String,
     size_mb: u64,
@@ -1110,33 +1188,65 @@ struct WhisperModelInfo {
     selected: bool,
 }
 
+/// Every transcription choice: the whisper models, then Parakeet.
 #[tauri::command]
-fn list_whisper_models(app: AppHandle) -> Result<Vec<WhisperModelInfo>, String> {
+fn list_transcription_models(app: AppHandle) -> Result<Vec<TranscriptionModelInfo>, String> {
     let settings = models::load_settings(&app);
-    let models_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("models");
-    Ok(WHISPER_MODELS
+    let models_dir = models::models_dir(&app)?;
+    let whisper_selected = settings.transcriber == transcribe::TranscriberKind::Whisper;
+    let mut rows: Vec<TranscriptionModelInfo> = WHISPER_MODELS
         .iter()
-        .map(|(name, description, size_mb)| WhisperModelInfo {
+        .map(|(name, description, size_mb)| TranscriptionModelInfo {
+            engine: transcribe::TranscriberKind::Whisper,
             name: (*name).to_string(),
             description: (*description).to_string(),
             size_mb: *size_mb,
             downloaded: models_dir.join(format!("ggml-{name}.bin")).exists(),
-            selected: settings.whisper_model == *name,
+            selected: whisper_selected && settings.whisper_model == *name,
         })
-        .collect())
+        .collect();
+    let (name, description, size_mb) = PARAKEET_MODEL;
+    rows.push(TranscriptionModelInfo {
+        engine: transcribe::TranscriberKind::Parakeet,
+        name: name.to_string(),
+        description: description.to_string(),
+        size_mb,
+        downloaded: models::parakeet_present(&models_dir),
+        selected: !whisper_selected,
+    });
+    Ok(rows)
+}
+
+/// Choose what transcribes. Picking a whisper model also switches to whisper,
+/// and the whisper model stays remembered while Parakeet is selected.
+#[tauri::command]
+fn set_transcription_model(
+    app: AppHandle,
+    engine: transcribe::TranscriberKind,
+    model: String,
+) -> Result<(), String> {
+    let mut settings = models::load_settings(&app);
+    match engine {
+        transcribe::TranscriberKind::Whisper => {
+            if !WHISPER_MODELS.iter().any(|(name, ..)| *name == model) {
+                return Err("unknown whisper model".into());
+            }
+            settings.whisper_model = model;
+        }
+        transcribe::TranscriberKind::Parakeet => {
+            if model != PARAKEET_MODEL.0 {
+                return Err("unknown parakeet model".into());
+            }
+        }
+    }
+    settings.transcriber = engine;
+    models::save_settings(&app, &settings)
 }
 
 #[tauri::command]
-fn set_whisper_model(app: AppHandle, model: String) -> Result<(), String> {
-    if !WHISPER_MODELS.iter().any(|(name, ..)| *name == model) {
-        return Err("unknown whisper model".into());
-    }
+fn set_skip_silence(app: AppHandle, enable: bool) -> Result<(), String> {
     let mut settings = models::load_settings(&app);
-    settings.whisper_model = model;
+    settings.skip_silence = enable;
     models::save_settings(&app, &settings)
 }
 
@@ -1361,8 +1471,9 @@ pub fn run() {
             set_notes_model,
             set_notes_engine,
             set_allow_cloud_models,
-            list_whisper_models,
-            set_whisper_model,
+            list_transcription_models,
+            set_transcription_model,
+            set_skip_silence,
             set_keep_audio,
             set_diarize_speakers,
             set_detect_meetings,

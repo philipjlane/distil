@@ -1,6 +1,34 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+use sherpa_rs::transducer::{TransducerConfig, TransducerRecognizer};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+use crate::vad;
+
+/// Which model transcribes meetings (the `transcriber` setting).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriberKind {
+    #[default]
+    Whisper,
+    /// NVIDIA Parakeet TDT 0.6B v3, run by sherpa-onnx. Fast, but only for
+    /// 25 European languages.
+    Parakeet,
+}
+
+/// Folder under the models dir holding the Parakeet files.
+pub const PARAKEET_DIR: &str = "parakeet-tdt-0.6b-v3-int8";
+/// Where the Parakeet files are published (int8 build, CC-BY-4.0, NVIDIA).
+pub const PARAKEET_URL: &str =
+    "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main";
+/// The files Parakeet needs, with their sizes in bytes.
+pub const PARAKEET_FILES: [(&str, u64); 4] = [
+    ("encoder.int8.onnx", 652_184_281),
+    ("decoder.int8.onnx", 11_845_275),
+    ("joiner.int8.onnx", 6_355_277),
+    ("tokens.txt", 93_939),
+];
 
 pub struct Segment {
     pub start_ms: i64,
@@ -32,21 +60,126 @@ pub fn read_wav_mono_f32(path: &Path) -> Result<Vec<f32>, String> {
     }
 }
 
-/// Transcribe one 16 kHz mono WAV into timestamped segments.
-/// Blocking and heavy; call from a blocking task, one at a time.
-pub fn transcribe(model: &Path, wav: &Path) -> Result<Vec<Segment>, String> {
-    let samples = read_wav_mono_f32(wav)?;
-    if samples.len() < 16_000 {
-        // Under a second of audio — treat as silence rather than erroring.
-        return Ok(Vec::new());
+/// A transcription model, loaded once and reused for every stream of a
+/// meeting. Loading is the slow part (seconds, and a gigabyte or so of RAM),
+/// so keep one alive across both streams and drop it before loading anything
+/// else: 8 GB Macs only have room for one model at a time.
+pub struct Transcriber {
+    model: Model,
+}
+
+enum Model {
+    Whisper {
+        context: WhisperContext,
+        /// Present: transcribe only the speech in each stream.
+        vad_model: Option<PathBuf>,
+    },
+    Parakeet {
+        recognizer: TransducerRecognizer,
+        vad_model: PathBuf,
+    },
+}
+
+impl Transcriber {
+    /// Load a whisper.cpp model. With a VAD model, whisper only sees the
+    /// stretches of each stream that have speech in them.
+    pub fn whisper(model: &Path, vad_model: Option<&Path>) -> Result<Self, String> {
+        if let Some(vad_model) = vad_model {
+            vad::check_model(vad_model)?;
+        }
+        let context = WhisperContext::new_with_params(
+            model.to_str().ok_or("model path is not valid utf-8")?,
+            WhisperContextParameters::default(),
+        )
+        .map_err(|e| format!("failed to load whisper model: {e}"))?;
+        Ok(Self {
+            model: Model::Whisper {
+                context,
+                vad_model: vad_model.map(Path::to_path_buf),
+            },
+        })
     }
 
-    let ctx = WhisperContext::new_with_params(
-        model.to_str().ok_or("model path is not valid utf-8")?,
-        WhisperContextParameters::default(),
-    )
-    .map_err(|e| format!("failed to load whisper model: {e}"))?;
-    let mut state = ctx.create_state().map_err(|e| e.to_string())?;
+    /// Load Parakeet from the folder holding its files (see `PARAKEET_FILES`).
+    /// It can't take a whole meeting at once, so the VAD model is required:
+    /// each stretch of speech is transcribed separately.
+    pub fn parakeet(model_dir: &Path, vad_model: &Path) -> Result<Self, String> {
+        vad::check_model(vad_model)?;
+        // sherpa-onnx aborts the process on a missing file, so look first.
+        for (file_name, _) in PARAKEET_FILES {
+            if !model_dir.join(file_name).is_file() {
+                return Err(format!(
+                    "Parakeet model file missing: {}",
+                    model_dir.join(file_name).display()
+                ));
+            }
+        }
+        let path = |file_name: &str| model_dir.join(file_name).to_string_lossy().into_owned();
+        let recognizer = TransducerRecognizer::new(TransducerConfig {
+            encoder: path("encoder.int8.onnx"),
+            decoder: path("decoder.int8.onnx"),
+            joiner: path("joiner.int8.onnx"),
+            tokens: path("tokens.txt"),
+            // sherpa-rs defaults to the plain "transducer" type, which is wrong for NeMo.
+            model_type: "nemo_transducer".into(),
+            decoding_method: "greedy_search".into(),
+            num_threads: 4,
+            sample_rate: 16_000,
+            feature_dim: 128,
+            provider: None,
+            ..Default::default()
+        })
+        .map_err(|e| format!("failed to load Parakeet: {e}"))?;
+        Ok(Self {
+            model: Model::Parakeet {
+                recognizer,
+                vad_model: vad_model.to_path_buf(),
+            },
+        })
+    }
+
+    /// Transcribe one 16 kHz mono WAV into timestamped segments, on the
+    /// recording's own timeline. Blocking and heavy; call from a blocking
+    /// task, one at a time.
+    pub fn transcribe(&mut self, wav: &Path) -> Result<Vec<Segment>, String> {
+        let samples = read_wav_mono_f32(wav)?;
+        if samples.len() < 16_000 {
+            // Under a second of audio — treat as silence rather than erroring.
+            return Ok(Vec::new());
+        }
+        match &mut self.model {
+            Model::Whisper { context, vad_model } => {
+                whisper_segments(context, vad_model.as_deref(), &samples)
+            }
+            Model::Parakeet { recognizer, vad_model } => {
+                parakeet_segments(recognizer, vad_model, &samples)
+            }
+        }
+    }
+}
+
+fn whisper_segments(
+    context: &WhisperContext,
+    vad_model: Option<&Path>,
+    samples: &[f32],
+) -> Result<Vec<Segment>, String> {
+    // whisper only gets the speech: pack the spans into one buffer, then map
+    // each segment's times back onto the recording. (`enable_vad` in the
+    // params would do this inside whisper.cpp, but whisper-rs never reaches
+    // that code.)
+    let packed = match vad_model {
+        Some(vad_model) => {
+            let spans = vad::speech_spans_joined(vad_model, samples)?;
+            if spans.is_empty() {
+                return Ok(Vec::new());
+            }
+            Some(vad::Packed::pack(samples, &spans))
+        }
+        None => None,
+    };
+    let audio = packed.as_ref().map_or(samples, |p| p.samples.as_slice());
+
+    let mut state = context.create_state().map_err(|e| e.to_string())?;
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_language(Some("auto"));
@@ -56,27 +189,60 @@ pub fn transcribe(model: &Path, wav: &Path) -> Result<Vec<Segment>, String> {
     params.set_print_timestamps(false);
 
     state
-        .full(params, &samples)
+        .full(params, audio)
         .map_err(|e| format!("transcription failed: {e}"))?;
 
     let mut segments = Vec::with_capacity(state.full_n_segments() as usize);
     for segment in state.as_iter() {
-        let text = segment
-            .to_str_lossy()
-            .map_err(|e| e.to_string())?
+        let text = segment.to_str_lossy().map_err(|e| e.to_string())?;
+        let text = strip_dialogue_dash(text.trim()).to_string();
+        if text.is_empty() || is_noise_annotation(&text) {
+            continue;
+        }
+        // whisper timestamps are in centiseconds
+        let (start_ms, end_ms) = (segment.start_timestamp() * 10, segment.end_timestamp() * 10);
+        let (start_ms, end_ms) = match &packed {
+            Some(packed) => packed.segment_to_original_ms(start_ms, end_ms),
+            None => (start_ms, end_ms),
+        };
+        segments.push(Segment { start_ms, end_ms, text });
+    }
+    Ok(segments)
+}
+
+fn parakeet_segments(
+    recognizer: &mut TransducerRecognizer,
+    vad_model: &Path,
+    samples: &[f32],
+) -> Result<Vec<Segment>, String> {
+    // Parakeet returns text without timestamps, so each speech span becomes
+    // one segment with the span's own times.
+    let mut segments = Vec::new();
+    for span in vad::speech_spans(vad_model, samples)? {
+        let text = recognizer
+            .transcribe(16_000, &samples[span.clone()])
             .trim()
             .to_string();
         if text.is_empty() || is_noise_annotation(&text) {
             continue;
         }
         segments.push(Segment {
-            // whisper timestamps are in centiseconds
-            start_ms: segment.start_timestamp() * 10,
-            end_ms: segment.end_timestamp() * 10,
+            start_ms: (span.start * 1000 / vad::SAMPLE_RATE) as i64,
+            end_ms: (span.end * 1000 / vad::SAMPLE_RATE) as i64,
             text,
         });
     }
     Ok(segments)
+}
+
+/// Whisper writes subtitle-style dialogue dashes ("- Yes.") at some speaker
+/// turns, more often on packed speech. The transcript labels speakers itself,
+/// so the dash is noise.
+fn strip_dialogue_dash(text: &str) -> &str {
+    match text.strip_prefix(['-', '\u{2013}', '\u{2014}']) {
+        Some(rest) if rest.starts_with(' ') => rest.trim_start(),
+        _ => text,
+    }
 }
 
 /// Whisper marks non-speech as `*music*`, `[Applause]`, `(laughs)`, `♪ … ♪`.
@@ -272,6 +438,14 @@ mod tests {
         assert!(is_noise_annotation("(laughs)"));
         assert!(is_noise_annotation("♪ ♪ ♪"));
         assert!(!is_noise_annotation("Politics of envy."));
+    }
+
+    #[test]
+    fn dialogue_dashes_are_stripped() {
+        assert_eq!(strip_dialogue_dash("- Yes, ship it."), "Yes, ship it.");
+        assert_eq!(strip_dialogue_dash("\u{2013} Agreed."), "Agreed.");
+        assert_eq!(strip_dialogue_dash("-5 degrees outside."), "-5 degrees outside.");
+        assert_eq!(strip_dialogue_dash("Mid - sentence dash."), "Mid - sentence dash.");
     }
 
     #[test]

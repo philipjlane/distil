@@ -27,7 +27,7 @@ without real diarization.
 |---|---|---|
 | Shell | **Tauri 2** | Menu-bar (tray) app, `ActivationPolicy::Accessory` (no Dock icon). React + TS + Vite frontend for library/settings windows. |
 | Capture | **Swift sidecar** (`distil-capture`) | Bundled as a Tauri sidecar. ScreenCaptureKit audio-only stream for system audio; AVAudioEngine for raw mic. (Apple voice processing/AEC is deliberately NOT used — in a headless sidecar it produced an all-zero mic stream; bleed is handled at merge time. Headphones give perfect separation regardless.) Emits 16 kHz mono WAV per stream + peak amplitude per stream so silent captures are detected, not transcribed. Needs mic + screen/system-audio recording permissions (TCC). |
-| Transcription | **whisper.cpp** via whisper-rs (Metal) | Default model: quantized `large-v3-turbo` (~574 MB), auto-downloaded on first run into app data dir. Post-meeting transcription in v1, not live. Merge-time bleed filter drops mic segments whose text duplicates time-overlapping system segments (backstop for speakers-without-headphones), and whisper noise annotations (`*music*`, `[Applause]`) are stripped. |
+| Transcription | **whisper.cpp** via whisper-rs (Metal) | Default model: quantized `large-v3-turbo` (~574 MB), auto-downloaded on first run into app data dir. Post-meeting transcription in v1, not live. Merge-time bleed filter drops mic segments whose text duplicates time-overlapping system segments (backstop for speakers-without-headphones), and whisper noise annotations (`*music*`, `[Applause]`) are stripped. Silence is skipped first: a Silero VAD (via sherpa-onnx, 0.6 MB) finds the speech, whisper sees only that, and segment times are mapped back onto the recording so diarization still lines up. NVIDIA **Parakeet TDT 0.6B v3** (also via sherpa-onnx, CPU) is the faster alternative. One model is loaded per meeting and serves both streams. |
 | Distillation | **Ollama** over localhost HTTP | Local models **only** — `*-cloud` Ollama models are excluded; they'd silently break the privacy promise. Runtime picks the best locally-installed model; configurable. Structured prompt → TL;DR, key points, decisions, action items (owner + due date when stated), open questions. |
 | Orchestration | Rust state machine | `idle → recording → transcribing → distilling → done/error`; progress pushed to UI via Tauri events. |
 
@@ -42,6 +42,19 @@ the moment each pipeline stage exists; the Settings UI is sugar over that file.
 - **Transcription (whisper.cpp)** — curated list: `large-v3-turbo` q5 (default) ·
   `small` (speed) · `large-v3` (max accuracy). Picking one downloads it on demand into
   the app data dir; the picker shows what's already on disk.
+- **Transcription speed (Oct 2026)**: transcription was the slowest stage, because
+  whisper ran over both streams in full, silence included, and reloaded its model
+  for each. Now the model loads once per meeting and a **Skip silence** switch (on by
+  default) hands whisper only the speech a VAD found. The picker also offers
+  `parakeet-tdt-0.6b-v3` (NVIDIA, CC-BY-4.0, about 670 MB int8, 25 European languages
+  only) beside the whisper models. Parakeet takes short inputs, so it always works
+  from VAD spans. If the VAD model can't be fetched whisper runs over the whole
+  stream, and if Parakeet can't load whisper takes over, so a meeting is never
+  lost to a download. meta.json records `transcriber` and `skippedSilence`. The
+  Parakeet files come from Hugging Face; the 0.6 MB VAD model comes from the
+  sherpa-onnx release on GitHub.
+  `eval_asr` in `docs/model-eval.md` compares engines on real meetings for speed and
+  word error rate before the default changes.
 - **Distillation (Ollama)** — populated live from `ollama list`, with `*-cloud` tags
   filtered out. Default = largest local model that fits a RAM heuristic. New options
   appear by running `ollama pull <model>`; the picker just refreshes.
