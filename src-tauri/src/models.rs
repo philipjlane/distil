@@ -44,6 +44,10 @@ pub struct Settings {
     pub allow_cloud_models: bool,
     /// Cluster distinct voices in the system stream into Them 1..N.
     pub diarize_speakers: bool,
+    /// Show a rough, English-only transcript in a small floating window while
+    /// recording. A disposable preview: the saved transcript is still made
+    /// from the full recording afterwards.
+    pub live_transcript: bool,
     /// Notice when a call app (Teams, Zoom, ...) starts using the microphone
     /// and offer to record it.
     pub detect_meetings: bool,
@@ -75,6 +79,7 @@ impl Default for Settings {
             openai_model: None,
             allow_cloud_models: false,
             diarize_speakers: true,
+            live_transcript: true,
             detect_meetings: true,
             auto_stop_recording: false,
             system_audio_access: "unknown".into(),
@@ -345,47 +350,18 @@ pub fn ensure_diarization_models<R: Runtime>(
 /// Path to the configured whisper model, downloading it on first use.
 /// Blocking; call from a blocking task. Emits `model-download` events.
 pub fn ensure_whisper_model<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let settings = load_settings(app);
-    let models_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("cannot resolve app data dir: {e}"))?
-        .join("models");
+    ensure_model(app, &load_settings(app).whisper_model)
+}
 
-    let already_present = models_dir
-        .join(format!("ggml-{}.bin", settings.whisper_model))
-        .exists();
-    if !already_present {
-        let _ = app.emit(
-            "model-download",
-            serde_json::json!({ "status": "started", "model": settings.whisper_model }),
-        );
-    }
-
-    let mut last_percent = -1i64;
-    let result = download_model(&models_dir, &settings.whisper_model, |received, total: Option<u64>| {
-        if let Some(total) = total {
-            let percent = (received * 100 / total.max(1)) as i64;
-            if percent != last_percent {
-                last_percent = percent;
-                let _ = app.emit(
-                    "model-download",
-                    serde_json::json!({
-                        "status": "progress",
-                        "receivedBytes": received,
-                        "totalBytes": total,
-                        "percent": percent,
-                    }),
-                );
-            }
-        }
-    });
-
-    if !already_present {
-        let status = if result.is_ok() { "done" } else { "failed" };
-        let _ = app.emit("model-download", serde_json::json!({ "status": status }));
-    }
-    result
+/// Path to the named whisper model (`ggml-<name>.bin`), downloading it on
+/// first use. Independent of the selected model, so the live preview can fetch
+/// its own. Blocking; call from a blocking task. Emits `model-download` events.
+pub fn ensure_model<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<PathBuf, String> {
+    let dir = models_dir(app)?;
+    let missing = !dir.join(format!("ggml-{name}.bin")).exists();
+    download_with_events(app, name, missing, |progress| {
+        download_model(&dir, name, progress)
+    })
 }
 
 pub fn models_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
@@ -596,6 +572,7 @@ mod tests {
         assert!(settings.keep_audio);
         assert_eq!(settings.transcriber, TranscriberKind::Whisper);
         assert!(settings.skip_silence);
+        assert!(settings.live_transcript);
     }
 
     #[test]

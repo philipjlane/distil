@@ -62,6 +62,7 @@ type Settings = {
   openaiModel: string | null;
   allowCloudModels: boolean;
   diarizeSpeakers: boolean;
+  liveTranscript: boolean;
   detectMeetings: boolean;
   autoStopRecording: boolean;
 };

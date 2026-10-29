@@ -5,6 +5,10 @@ import Foundation
 /// Accepts PCM buffers in whatever format the source produces and writes a
 /// 16 kHz mono 16-bit WAV (whisper's native input), converting incrementally.
 /// Not thread-safe; each instance must be fed from one serial context.
+///
+/// Optionally mirrors every frame it writes to the WAV into a headerless PCM
+/// file for the host's live transcript. A raw file has no length field to go
+/// stale, so the host can read it while it grows.
 final class ConvertingWavWriter {
     static let outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
@@ -16,13 +20,29 @@ final class ConvertingWavWriter {
     /// Loudest absolute sample written (0…32767). 0 after a whole recording
     /// means the stream was dead — surfaced so silent captures can't hide.
     private(set) var peakAmplitude: Int = 0
+    /// The live transcript's copy. Best effort: the WAV is the recording and
+    /// this is a preview, so any failure here only switches the copy off.
+    private var liveFile: FileHandle?
 
-    init(url: URL) throws {
+    init(url: URL, pcmURL: URL? = nil) throws {
         file = try AVAudioFile(
             forWriting: url,
             settings: Self.outputFormat.settings,
             commonFormat: .pcmFormatInt16,
             interleaved: true)
+        if let pcmURL {
+            if FileManager.default.createFile(atPath: pcmURL.path, contents: nil) {
+                liveFile = try? FileHandle(forWritingTo: pcmURL)
+            }
+            if liveFile == nil {
+                // "warning", not "error": the host treats an error event as a
+                // failed recording and throws the folder away.
+                Emit.event([
+                    "event": "warning",
+                    "message": "live transcript unavailable: cannot create \(pcmURL.lastPathComponent)",
+                ])
+            }
+        }
     }
 
     var secondsWritten: Double {
@@ -82,6 +102,8 @@ final class ConvertingWavWriter {
         }
         converter = nil
         file = nil  // AVAudioFile finalises on release
+        _ = try? liveFile?.close()
+        liveFile = nil
     }
 
     private func write(_ buffer: AVAudioPCMBuffer) {
@@ -95,8 +117,29 @@ final class ConvertingWavWriter {
         do {
             try file.write(from: buffer)
             framesWritten += AVAudioFramePosition(buffer.frameLength)
+            writePCM(buffer)
         } catch {
             Emit.error("wav write failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Append the frames just written to the WAV to the live transcript's file.
+    /// `write(contentsOf:)` throws; the older `write(_:)` raises an Objective-C
+    /// exception on a full disk, which would take the recording down with it.
+    private func writePCM(_ buffer: AVAudioPCMBuffer) {
+        guard let liveFile, let channel = buffer.int16ChannelData?.pointee else { return }
+        do {
+            try liveFile.write(
+                contentsOf: Data(bytes: channel, count: Int(buffer.frameLength) * MemoryLayout<Int16>.size))
+        } catch {
+            // Say so once and stop; the WAV is untouched. "warning" for the
+            // same reason as in init.
+            Emit.event([
+                "event": "warning",
+                "message": "live transcript stopped: \(error.localizedDescription)",
+            ])
+            _ = try? liveFile.close()
+            self.liveFile = nil
         }
     }
 

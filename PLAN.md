@@ -168,11 +168,26 @@ per-model, user-made decision.
   Safe Links (`*.safelinks.protection.outlook.com/?url=...`) to the link inside,
   and treats a location of "Microsoft Teams Meeting" as a meeting even when
   Outlook left the link only in the body.
+- **M8: Live transcript (v1.4)**: a read-along preview while recording. A small
+  always-on-top window (a Settings switch, on by default) shows a rough, English-only
+  transcript of both streams, Me and Them, a few seconds behind the speech. It is
+  disposable: never saved and never fed to the notes, and the saved transcript is
+  still made from the full recording afterwards. With `--live-pcm` the sidecar
+  mirrors the 16 kHz frames it writes to each WAV into a headerless `live-mic.pcm` /
+  `live-system.pcm`; `live.rs` tails them every 3 s and runs whisper `tiny.en-q8_0`
+  (43 MB, fetched on first use, English only) over the last 20 s of each stream,
+  skipping a stream that has gone quiet. Text more than 6 s behind the newest audio
+  is committed (sent once, never rewritten) and the tail is provisional, redrawn each
+  tick. Nothing here may harm a recording: the loop has its own thread and model,
+  failures degrade to "preview unavailable", closing the window stops it, and the PCM
+  files are deleted after the last pass unless "keep audio" is on. Design:
+  `docs/superpowers/specs/2026-08-05-live-transcript-design.md`.
 
 ## Non-goals (v1)
 
-Live/streaming transcription · true multi-speaker diarization (beyond Me/Them) ·
-search · in-app note editing · Windows/Linux · any cloud or sync.
+Live/streaming transcription as the saved transcript (M8 adds a disposable live
+preview) · true multi-speaker diarization (beyond Me/Them) · search · in-app note
+editing · Windows/Linux · any cloud or sync.
 (Calendar prompts graduated from this list to M5.)
 
 ## Open questions

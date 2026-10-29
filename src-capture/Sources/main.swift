@@ -40,14 +40,14 @@ if arguments.contains("watch-mic") {
 guard let flagIndex = arguments.firstIndex(of: "--out-dir"), flagIndex + 1 < arguments.count else {
     FileHandle.standardError.write(
         Data(
-            "usage: distil-capture --out-dir <dir> | --check-permissions | --check-system-audio | --request-permission <microphone|calendar> | watch-mic\n"
+            "usage: distil-capture --out-dir <dir> [--live-pcm] | --check-permissions | --check-system-audio | --request-permission <microphone|calendar> | watch-mic\n"
                 .utf8))
     exit(2)
 }
 
 do {
     let outDir = URL(fileURLWithPath: arguments[flagIndex + 1], isDirectory: true)
-    let session = try CaptureSession(outDir: outDir)
+    let session = try CaptureSession(outDir: outDir, livePCM: arguments.contains("--live-pcm"))
     session.start()
     StopTriggers.install { session.requestStop() }
 } catch {
