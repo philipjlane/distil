@@ -49,6 +49,9 @@ struct AppState {
     detector: meetings::Detector,
     /// Display name of the call app on the microphone, for the tray row.
     detected: Option<String>,
+    /// Mirrors the detect_meetings setting, so the 2 s mic snapshots needn't
+    /// read settings.json to know whether to surface a call.
+    detect_meetings: bool,
 }
 
 impl Default for AppState {
@@ -60,6 +63,7 @@ impl Default for AppState {
             prompted_meetings: std::collections::HashSet::new(),
             detector: meetings::Detector::default(),
             detected: None,
+            detect_meetings: true,
         }
     }
 }
@@ -690,7 +694,11 @@ fn handle_mic_snapshot<R: Runtime>(app: &AppHandle<R>, users: &[meetings::MicUse
             calendar_meeting,
             std::time::Instant::now(),
         );
-        let detected = guard.detector.current().map(str::to_string);
+        let detected = guard
+            .detector
+            .current()
+            .filter(|_| guard.detect_meetings)
+            .map(str::to_string);
         let changed = detected != guard.detected;
         guard.detected = detected.clone();
         (
@@ -1150,7 +1158,18 @@ fn set_diarize_speakers(app: AppHandle, enable: bool) -> Result<(), String> {
 fn set_detect_meetings(app: AppHandle, enable: bool) -> Result<(), String> {
     let mut settings = models::load_settings(&app);
     settings.detect_meetings = enable;
-    models::save_settings(&app, &settings)
+    models::save_settings(&app, &settings)?;
+    // Switching off also takes down a call the tray is already offering.
+    let cleared = {
+        let state = app.state::<Mutex<AppState>>();
+        let mut guard = state.lock().unwrap();
+        guard.detect_meetings = enable;
+        !enable && guard.detected.take().is_some()
+    };
+    if cleared {
+        let _ = app.emit("meeting-detected", None::<String>);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1382,6 +1401,8 @@ pub fn run() {
                 .build(app)?;
 
             start_calendar_watcher(app.handle().clone());
+            app.state::<Mutex<AppState>>().lock().unwrap().detect_meetings =
+                models::load_settings(app.handle()).detect_meetings;
             start_mic_watcher(app.handle().clone());
 
             Ok(())
