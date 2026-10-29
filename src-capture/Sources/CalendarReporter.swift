@@ -18,33 +18,22 @@ enum CalendarReporter {
         let formatter = ISO8601DateFormatter()
 
         let events = store.events(matching: predicate).map { event -> [String: Any] in
-            var haystack = [event.title ?? "", event.location ?? "", event.notes ?? ""]
-                .joined(separator: " ")
-            if let url = event.url?.absoluteString {
-                haystack += " " + url
-            }
-            return [
+            var fields: [String: Any] = [
                 "title": event.title ?? "Untitled",
                 "startsAt": formatter.string(from: event.startDate),
                 "endsAt": formatter.string(from: event.endDate),
                 "isAllDay": event.isAllDay,
                 "attendeeCount": event.attendees?.count ?? 0,
                 "attendees": event.attendees?.compactMap { $0.name } ?? [String](),
-                "videoLink": firstVideoLink(in: haystack) as Any,
             ]
+            // Raw text only: the host looks for a video-conference link in these
+            // (calendar.rs), where it is testable.
+            if let location = event.location { fields["location"] = location }
+            if let notes = event.notes { fields["notes"] = notes }
+            if let url = event.url?.absoluteString { fields["url"] = url }
+            return fields
         }
         Emit.event(["event": "calendar", "authorized": true, "events": events])
         exit(0)
-    }
-
-    static func firstVideoLink(in text: String) -> String? {
-        let hosts = ["zoom.us", "meet.google.com", "teams.microsoft.com", "webex.com", "meet.jit.si"]
-        for word in text.split(whereSeparator: { $0.isWhitespace || $0 == "<" || $0 == ">" }) {
-            let candidate = String(word)
-            if candidate.hasPrefix("http"), hosts.contains(where: { candidate.contains($0) }) {
-                return candidate
-            }
-        }
-        return nil
     }
 }
