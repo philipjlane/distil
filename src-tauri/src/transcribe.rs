@@ -238,7 +238,7 @@ fn parakeet_segments(
 /// Whisper writes subtitle-style dialogue dashes ("- Yes.") at some speaker
 /// turns, more often on packed speech. The transcript labels speakers itself,
 /// so the dash is noise.
-fn strip_dialogue_dash(text: &str) -> &str {
+pub(crate) fn strip_dialogue_dash(text: &str) -> &str {
     match text.strip_prefix(['-', '\u{2013}', '\u{2014}']) {
         Some(rest) if rest.starts_with(' ') => rest.trim_start(),
         _ => text,
@@ -246,7 +246,7 @@ fn strip_dialogue_dash(text: &str) -> &str {
 }
 
 /// Whisper marks non-speech as `*music*`, `[Applause]`, `(laughs)`, `♪ … ♪`.
-fn is_noise_annotation(text: &str) -> bool {
+pub(crate) fn is_noise_annotation(text: &str) -> bool {
     let bracketed = [('*', '*'), ('[', ']'), ('(', ')')]
         .iter()
         .any(|(open, close)| text.starts_with(*open) && text.ends_with(*close));
