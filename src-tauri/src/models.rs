@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::llm::Engine;
+
 /// User-tunable settings, stored as settings.json in the app data dir.
 /// The Settings UI (M4) is sugar over this file.
 #[derive(Serialize, Deserialize, Clone)]
@@ -20,8 +22,17 @@ pub struct Settings {
     pub ollama_url: String,
     /// Distillation model. None = auto-pick the largest local model.
     pub ollama_model: Option<String>,
-    /// Explicit opt-in: surface `*-cloud` Ollama models in the picker.
-    /// Transcripts sent to them leave the Mac (Ollama states zero retention).
+    /// Which server writes the notes: Ollama, or any OpenAI-compatible server
+    /// (oMLX, mlx_lm.server, llama-server, LM Studio).
+    pub engine: Engine,
+    /// OpenAI-compatible base URL, including the `/v1` suffix.
+    pub openai_url: String,
+    /// Notes model on the OpenAI-compatible server. None = auto, which only
+    /// works when the server serves exactly one local model.
+    pub openai_model: Option<String>,
+    /// Explicit opt-in: surface `*-cloud` Ollama models in the picker, and
+    /// allow an OpenAI-compatible server that isn't on this Mac. Transcripts
+    /// sent to them leave the Mac (Ollama states zero retention).
     /// Cloud models are NEVER auto-picked, only chosen deliberately.
     pub allow_cloud_models: bool,
     /// Cluster distinct voices in the system stream into Them 1..N.
@@ -43,9 +54,30 @@ impl Default for Settings {
             keep_audio: false,
             ollama_url: "http://localhost:11434".into(),
             ollama_model: None,
+            engine: Engine::Ollama,
+            openai_url: "http://localhost:8080/v1".into(),
+            openai_model: None,
             allow_cloud_models: false,
             diarize_speakers: true,
             system_audio_access: "unknown".into(),
+        }
+    }
+}
+
+impl Settings {
+    /// (engine, base URL, selected model) for whichever engine is active.
+    pub fn notes_engine(&self) -> (Engine, &str, Option<&str>) {
+        match self.engine {
+            Engine::Ollama => (
+                Engine::Ollama,
+                self.ollama_url.as_str(),
+                self.ollama_model.as_deref(),
+            ),
+            Engine::OpenAi => (
+                Engine::OpenAi,
+                self.openai_url.as_str(),
+                self.openai_model.as_deref(),
+            ),
         }
     }
 }

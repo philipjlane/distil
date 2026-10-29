@@ -45,6 +45,14 @@ the moment each pipeline stage exists; the Settings UI is sugar over that file.
 - **Distillation (Ollama)** — populated live from `ollama list`, with `*-cloud` tags
   filtered out. Default = largest local model that fits a RAM heuristic. New options
   appear by running `ollama pull <model>`; the picker just refreshes.
+- **Distillation engine (Oct 2026)**: Settings can switch from Ollama to any
+  OpenAI-compatible server (oMLX, `mlx_lm.server`, `llama-server`, LM Studio), so
+  an MLX runtime can be swapped in. Ollama keeps its native API because only it
+  gives a reliable thinking toggle, a settable context window and model sizes for
+  auto-pick. A server that isn't on loopback counts as cloud and sits behind the
+  same opt-in. Per-model presets (`llm.rs`) apply the sampling and system prompt
+  each model card recommends; `docs/model-eval.md` compares models on real
+  meetings before one becomes the default.
 
 Rollout: `settings.json` overrides work from M2 (whisper) / M3 (Ollama); the
 distillation dropdown ships with M3's library window; the full Settings pane (both

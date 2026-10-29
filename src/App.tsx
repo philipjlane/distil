@@ -48,13 +48,16 @@ type MeetingMeta = {
 
 type MeetingDoc = { notes: string | null; transcript: string | null; meta: MeetingMeta };
 
-type OllamaModel = { name: string; parameterSize: number | null; isCloud: boolean };
+type NotesModel = { name: string; parameterSize: number | null; isCloud: boolean };
 
 type Settings = {
   whisperModel: string;
   keepAudio: boolean;
   ollamaUrl: string;
   ollamaModel: string | null;
+  engine: "ollama" | "openai";
+  openaiUrl: string;
+  openaiModel: string | null;
   allowCloudModels: boolean;
   diarizeSpeakers: boolean;
 };
@@ -191,7 +194,7 @@ function App() {
   const [view, setView] = useState<"notes" | "transcript">("notes");
   const [nav, setNav] = useState<"library" | "settings">("library");
   const [query, setQuery] = useState("");
-  const [models, setModels] = useState<OllamaModel[]>([]);
+  const [models, setModels] = useState<NotesModel[]>([]);
   const [modelsError, setModelsError] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [upcoming, setUpcoming] = useState<UpcomingMeeting>(null);
@@ -224,7 +227,7 @@ function App() {
   }, []);
 
   const loadModels = useCallback(() => {
-    invoke<OllamaModel[]>("list_ollama_models")
+    invoke<NotesModel[]>("list_notes_models")
       .then((list) => {
         setModels(list);
         setModelsError(false);
@@ -547,7 +550,10 @@ function App() {
               whisper · {settings?.whisperModel ?? "…"}
             </span>
             <span className="ui-badge badge-mono">
-              {settings?.ollamaModel ?? "ollama · auto"}
+              {settings
+                ? ((settings.engine === "openai" ? settings.openaiModel : settings.ollamaModel) ??
+                  `${settings.engine === "openai" ? "server" : "ollama"} · auto`)
+                : "…"}
             </span>
           </div>
         </div>
@@ -568,8 +574,8 @@ function App() {
           <div className="content">
             <SettingsPane
               settings={settings}
-              ollamaModels={models}
-              ollamaError={modelsError}
+              notesModels={models}
+              notesError={modelsError}
               onSettingsChange={setSettings}
               onReloadModels={loadModels}
             />
