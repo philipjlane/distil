@@ -25,6 +25,10 @@ cloud Ollama models.
 - **Call detection** - notices when Teams, Zoom or another call app starts using
   the microphone and offers to record, then offers to stop (or stops, if you ask
   it to) when the call ends
+- **Live transcript** - an optional floating window shows a rough, English-only
+  preview of the call as it happens (Me and Them), so you can glance back at what
+  was just said; the saved transcript is still made from the full recording
+  afterwards
 - **A real library** — browse meetings, rendered notes/transcripts, copy, reveal in
   Finder, delete to Trash
 

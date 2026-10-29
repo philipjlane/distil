@@ -1,7 +1,7 @@
 # Live transcript panel
 
 Date: 2026-08-05
-Status: approved, not yet implemented
+Status: implemented
 
 ## Goal
 
@@ -174,3 +174,101 @@ The real logic is the windowing and commit split, and it is pure:
 - **Tick cost on lower-end hardware.** Designed around an Apple Silicon machine.
   The single-flight rule and silence skipping are the mitigations; if they prove
   insufficient the tick interval is the tuning knob.
+
+## Implementation notes
+
+Built as designed; the differences and additions are below. The code is
+`src-tauri/src/live.rs` (the loop and all the logic), `models::ensure_model`,
+the `--live-pcm` option of the sidecar, `src/LivePanel.tsx` and a few lines in
+`lib.rs`.
+
+### Differences from the design
+
+- **Whisper hears only the audio after the watermark.** The design runs it over
+  the whole 20 s window on every tick. Simulated with real speech, that had
+  whisper cut the already committed audio differently each time, which gave
+  repeated lines and, worse, lost words: a re-cut line that mostly overlapped
+  committed time was dropped as a repeat although its last words were new
+  ("...ask what you can do for your country" lost "for your country"). So each
+  pass decodes only what follows the last committed text (still never more than
+  20 s). Text that commits still had at least the 6 s horizon of audio after it,
+  the next text starts at a natural boundary, and a pass costs less. The window
+  stays 20 s as the most that is kept.
+- **Silence check on the uncommitted audio.** Step 3 measures the RMS of the
+  part of the window after the commit watermark, not of the whole 20 s window.
+  Otherwise a stream that has just gone quiet stays "loud" for up to 20 s while
+  its last words slide out of the window, and the saving the design counts on
+  never arrives. When that part is silent, whatever provisional text is on show is
+  cleared, because nothing backs it any more. The threshold is an RMS of 0.003
+  (about -50 dBFS).
+- **The sidecar only writes the PCM files when asked.** `distil-capture
+  --out-dir <dir> --live-pcm`; the host passes the flag only when the live
+  transcript is on, so switching it off costs no extra disk writes.
+- **PCM trouble is a `warning` event, not an `error`.** The host treats any
+  `error` event from the sidecar as a failed recording and deletes the meeting
+  folder, so a preview problem must not use it. A failure to create or write the
+  PCM file is reported once as `{"event": "warning", ...}` and the copy switches
+  itself off; the WAV is never touched. Writes use the throwing
+  `FileHandle.write(contentsOf:)`, since the older `write(_:)` raises an
+  Objective-C exception on a full disk.
+- **The panel is a new window per recording, closed for real.** The design said
+  closing hides the window. A hidden window shown again takes focus (tao calls
+  `makeKeyAndOrderFront`), which would pull focus out of the call at the start
+  of the next recording, so the live window is built unfocused each time and
+  destroyed when closed. Closing it, or switching the setting off, stops the
+  loop. After the notes are written the panel closes itself a few seconds later.
+- **Two extra signals for the panel.** A `live-status` event (`preparing`,
+  `live`, `unavailable`, `finished`) says what the preview is doing, which the
+  design's "preparing" and "unavailable" messages need, and a `live_snapshot`
+  command returns everything said so far, because the webview loads a moment
+  after the loop starts and would otherwise miss early lines.
+- **The last pass decodes again.** On stop the loop reads the final audio, runs
+  whisper once more and commits everything, so the last couple of seconds are in
+  it. If that decode fails, the provisional text last shown is committed instead.
+  The host waits up to 10 s for this before transcription starts, then moves on.
+- **The `.pcm` files go as soon as the loop is done.** The host deletes them
+  (unless "keep audio" is on) right after the last pass and before the full
+  transcription starts, so they are gone whether or not transcription later
+  succeeds.
+
+### Choices the design left open
+
+- A line whose middle lies at or before the watermark is a repeat (whisper cuts
+  the same audio differently from tick to tick) and is dropped; this is what
+  keeps "committed ranges are never re-emitted" true across ticks. A segment
+  straddling the commit horizon stays provisional whole, and committing is
+  always a prefix, so committed text is never followed by older text. Segment
+  times are clamped to the window, since whisper sometimes places a segment past
+  the end of its audio.
+- Lines over silent audio are dropped before the split: whisper invents "Thank
+  you." over silence, and a committed line is permanent.
+- One whisper context and one state serve both streams, one tick after another.
+  Each decode uses `no_context` and no temperature fallback, so ticks are
+  independent and a hard stretch never costs extra passes.
+- The loop waits at least a second between passes even when one overruns, so a
+  slow machine does less work rather than running flat out.
+- A tick fails if either stream's decode fails; three failed ticks in a row stop
+  the loop and the panel says the preview is unavailable.
+- Settings has a "Show a live transcript while recording" switch (on by
+  default).
+
+### Known limits
+
+- A single whisper segment longer than about 14 s never settles while the
+  speaker keeps going, and the front of it can slide out of the window before it
+  does. In practice tiny.en breaks continuous speech into shorter segments.
+- The preview does not filter mic bleed. Without headphones, what the speakers
+  play reaches the mic and can show up under Me as well as Them; the real pass
+  drops it.
+- The live thread runs at normal priority; its cost next to a real call has not
+  been measured on a Mac.
+
+### Tests
+
+Unit tests in `live.rs` cover the commit split, the PCM tail reader, the
+rolling window, a tick with a scripted decoder, and the loop (failure counting,
+cancel, finish, a model that will not load, a decoder that panics). The
+`#[ignore]`d `tests/live_e2e.rs` synthesises speech with `say`, feeds it into a
+PCM file in chunks on a simulated clock and checks the real model's output:
+text appears, committed text only grows, the watermark never moves back, and the
+stop commits the last words.
