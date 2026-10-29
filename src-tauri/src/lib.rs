@@ -1173,9 +1173,14 @@ const WHISPER_MODELS: &[(&str, &str, u64)] = &[
     ("tiny.en-q8_0", "Fastest, English-only — for quick tests", 43),
 ];
 
+/// The Parakeet choice beside the whisper models: name, blurb, size on disk.
+const PARAKEET_MODEL: (&str, &str, u64) =
+    ("parakeet-tdt-0.6b-v3", "Fastest, 25 European languages", 670);
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WhisperModelInfo {
+struct TranscriptionModelInfo {
+    engine: transcribe::TranscriberKind,
     name: String,
     description: String,
     size_mb: u64,
@@ -1183,33 +1188,65 @@ struct WhisperModelInfo {
     selected: bool,
 }
 
+/// Every transcription choice: the whisper models, then Parakeet.
 #[tauri::command]
-fn list_whisper_models(app: AppHandle) -> Result<Vec<WhisperModelInfo>, String> {
+fn list_transcription_models(app: AppHandle) -> Result<Vec<TranscriptionModelInfo>, String> {
     let settings = models::load_settings(&app);
-    let models_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("models");
-    Ok(WHISPER_MODELS
+    let models_dir = models::models_dir(&app)?;
+    let whisper_selected = settings.transcriber == transcribe::TranscriberKind::Whisper;
+    let mut rows: Vec<TranscriptionModelInfo> = WHISPER_MODELS
         .iter()
-        .map(|(name, description, size_mb)| WhisperModelInfo {
+        .map(|(name, description, size_mb)| TranscriptionModelInfo {
+            engine: transcribe::TranscriberKind::Whisper,
             name: (*name).to_string(),
             description: (*description).to_string(),
             size_mb: *size_mb,
             downloaded: models_dir.join(format!("ggml-{name}.bin")).exists(),
-            selected: settings.whisper_model == *name,
+            selected: whisper_selected && settings.whisper_model == *name,
         })
-        .collect())
+        .collect();
+    let (name, description, size_mb) = PARAKEET_MODEL;
+    rows.push(TranscriptionModelInfo {
+        engine: transcribe::TranscriberKind::Parakeet,
+        name: name.to_string(),
+        description: description.to_string(),
+        size_mb,
+        downloaded: models::parakeet_present(&models_dir),
+        selected: !whisper_selected,
+    });
+    Ok(rows)
+}
+
+/// Choose what transcribes. Picking a whisper model also switches to whisper,
+/// and the whisper model stays remembered while Parakeet is selected.
+#[tauri::command]
+fn set_transcription_model(
+    app: AppHandle,
+    engine: transcribe::TranscriberKind,
+    model: String,
+) -> Result<(), String> {
+    let mut settings = models::load_settings(&app);
+    match engine {
+        transcribe::TranscriberKind::Whisper => {
+            if !WHISPER_MODELS.iter().any(|(name, ..)| *name == model) {
+                return Err("unknown whisper model".into());
+            }
+            settings.whisper_model = model;
+        }
+        transcribe::TranscriberKind::Parakeet => {
+            if model != PARAKEET_MODEL.0 {
+                return Err("unknown parakeet model".into());
+            }
+        }
+    }
+    settings.transcriber = engine;
+    models::save_settings(&app, &settings)
 }
 
 #[tauri::command]
-fn set_whisper_model(app: AppHandle, model: String) -> Result<(), String> {
-    if !WHISPER_MODELS.iter().any(|(name, ..)| *name == model) {
-        return Err("unknown whisper model".into());
-    }
+fn set_skip_silence(app: AppHandle, enable: bool) -> Result<(), String> {
     let mut settings = models::load_settings(&app);
-    settings.whisper_model = model;
+    settings.skip_silence = enable;
     models::save_settings(&app, &settings)
 }
 
@@ -1434,8 +1471,9 @@ pub fn run() {
             set_notes_model,
             set_notes_engine,
             set_allow_cloud_models,
-            list_whisper_models,
-            set_whisper_model,
+            list_transcription_models,
+            set_transcription_model,
+            set_skip_silence,
             set_keep_audio,
             set_diarize_speakers,
             set_detect_meetings,

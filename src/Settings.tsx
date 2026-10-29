@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, ChevronDown } from "lucide-react";
 
-type WhisperModel = {
+type TranscriptionModel = {
+  engine: "whisper" | "parakeet";
   name: string;
   description: string;
   sizeMb: number;
@@ -14,6 +15,8 @@ type NotesModel = { name: string; parameterSize: number | null; isCloud: boolean
 
 type Settings = {
   whisperModel: string;
+  transcriber: "whisper" | "parakeet";
+  skipSilence: boolean;
   keepAudio: boolean;
   ollamaUrl: string;
   ollamaModel: string | null;
@@ -57,7 +60,7 @@ export function SettingsPane({
   onSettingsChange: (next: Settings) => void;
   onReloadModels: () => void;
 }) {
-  const [whisperModels, setWhisperModels] = useState<WhisperModel[]>([]);
+  const [transcriptionModels, setTranscriptionModels] = useState<TranscriptionModel[]>([]);
   const [permissions, setPermissions] = useState<Permissions | null>(null);
   const [autostart, setAutostart] = useState(false);
   const [prompt, setPrompt] = useState<NotesPrompt | null>(null);
@@ -75,8 +78,8 @@ export function SettingsPane({
   }, []);
 
   useEffect(() => {
-    invoke<WhisperModel[]>("list_whisper_models")
-      .then(setWhisperModels)
+    invoke<TranscriptionModel[]>("list_transcription_models")
+      .then(setTranscriptionModels)
       .catch(() => {});
     invoke<boolean>("get_autostart").then(setAutostart).catch(() => {});
     invoke<NotesPrompt>("get_notes_prompt")
@@ -86,7 +89,7 @@ export function SettingsPane({
       })
       .catch(() => {});
     refreshPermissions();
-  }, [refreshPermissions, settings.whisperModel]);
+  }, [refreshPermissions, settings.whisperModel, settings.transcriber]);
 
   const applyPrompt = (text: string) => {
     invoke<NotesPrompt>("set_notes_prompt", { text })
@@ -197,17 +200,24 @@ export function SettingsPane({
       <div className="ui-card section-card">
         <h3 className="app-h2 card-h">Transcription</h3>
         <p className="card-sub">
-          On-device with whisper.cpp. Models download automatically on first use.
+          On-device with whisper.cpp or Parakeet. Models download automatically on
+          first use.
         </p>
         <div className="model-rows">
-          {whisperModels.map((m) => (
+          {transcriptionModels.map((m) => (
             <button
               key={m.name}
               className="model-row"
               data-on={m.selected}
               onClick={() => {
-                invoke("set_whisper_model", { model: m.name }).catch(() => {});
-                onSettingsChange({ ...settings, whisperModel: m.name });
+                invoke("set_transcription_model", { engine: m.engine, model: m.name }).catch(
+                  () => {},
+                );
+                onSettingsChange(
+                  m.engine === "parakeet"
+                    ? { ...settings, transcriber: "parakeet" }
+                    : { ...settings, transcriber: "whisper", whisperModel: m.name },
+                );
               }}
             >
               <span className="radio-dot" />
@@ -221,6 +231,23 @@ export function SettingsPane({
               {m.downloaded && <span className="ui-badge badge-teal">Downloaded</span>}
             </button>
           ))}
+        </div>
+        <div className="switch-row" style={{ marginTop: 16 }}>
+          <Switch
+            on={settings.skipSilence}
+            onToggle={(enable) => {
+              invoke("set_skip_silence", { enable }).catch(() => {});
+              onSettingsChange({ ...settings, skipSilence: enable });
+            }}
+          />
+          <div className="switch-main">
+            <div className="switch-title">Skip silence</div>
+            <div className="switch-desc">
+              Transcribes only the parts of each stream with speech in them, which is
+              faster and stops whisper inventing text over silence. Parakeet always does
+              this.
+            </div>
+          </div>
         </div>
         <div className="switch-row" style={{ marginTop: 16 }}>
           <Switch

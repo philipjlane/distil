@@ -52,6 +52,8 @@ type NotesModel = { name: string; parameterSize: number | null; isCloud: boolean
 
 type Settings = {
   whisperModel: string;
+  transcriber: "whisper" | "parakeet";
+  skipSilence: boolean;
   keepAudio: boolean;
   ollamaUrl: string;
   ollamaModel: string | null;
@@ -549,7 +551,9 @@ function App() {
               </span>
             )}
             <span className="ui-badge badge-mono">
-              whisper · {settings?.whisperModel ?? "…"}
+              {settings?.transcriber === "parakeet"
+                ? "parakeet · tdt-0.6b-v3"
+                : `whisper · ${settings?.whisperModel ?? "…"}`}
             </span>
             <span className="ui-badge badge-mono">
               {settings
