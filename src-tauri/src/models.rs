@@ -37,6 +37,13 @@ pub struct Settings {
     pub allow_cloud_models: bool,
     /// Cluster distinct voices in the system stream into Them 1..N.
     pub diarize_speakers: bool,
+    /// Notice when a call app (Teams, Zoom, ...) starts using the microphone
+    /// and offer to record it.
+    pub detect_meetings: bool,
+    /// Stop recording once every call app seen during the recording has
+    /// released the microphone, instead of only asking. Needs
+    /// `detect_meetings`; off by default so a recording never ends unasked.
+    pub auto_stop_recording: bool,
     /// Last known result of the system-audio permission probe: "unknown",
     /// "granted" or "denied".
     ///
@@ -59,6 +66,8 @@ impl Default for Settings {
             openai_model: None,
             allow_cloud_models: false,
             diarize_speakers: true,
+            detect_meetings: true,
+            auto_stop_recording: false,
             system_audio_access: "unknown".into(),
         }
     }

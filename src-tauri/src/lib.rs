@@ -1,6 +1,7 @@
 pub mod calendar;
 pub mod diarize;
 pub mod llm;
+pub mod meetings;
 pub mod models;
 pub mod ollama;
 pub mod transcribe;
@@ -45,6 +46,12 @@ struct AppState {
     last_state: UiState,
     upcoming: Option<UpcomingMeeting>,
     prompted_meetings: std::collections::HashSet<String>,
+    detector: meetings::Detector,
+    /// Display name of the call app on the microphone, for the tray row.
+    detected: Option<String>,
+    /// Mirrors the detect_meetings setting, so the 2 s mic snapshots needn't
+    /// read settings.json to know whether to surface a call.
+    detect_meetings: bool,
 }
 
 impl Default for AppState {
@@ -54,6 +61,9 @@ impl Default for AppState {
             last_state: UiState::Idle { last_meeting: None },
             upcoming: None,
             prompted_meetings: std::collections::HashSet::new(),
+            detector: meetings::Detector::default(),
+            detected: None,
+            detect_meetings: true,
         }
     }
 }
@@ -508,6 +518,22 @@ fn record_upcoming_impl<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Start recording the call the mic watcher spotted: named after the calendar
+/// meeting when one is on, otherwise after the app ("Teams call").
+fn record_detected_impl<R: Runtime>(app: &AppHandle<R>) {
+    let (has_upcoming, detected) = {
+        let state = app.state::<Mutex<AppState>>();
+        let guard = state.lock().unwrap();
+        (guard.upcoming.is_some(), guard.detected.clone())
+    };
+    if has_upcoming {
+        record_upcoming_impl(app);
+    } else {
+        let title = detected.map(|name| format!("{name} call"));
+        start_recording(app, title.as_deref(), Vec::new());
+    }
+}
+
 const CALENDAR_POLL_SECS: u64 = 60;
 /// Prompt window: from 2 minutes before a meeting starts until 10 minutes in.
 const LEAD_SECS: i64 = 120;
@@ -595,6 +621,154 @@ fn poll_calendar<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// How long to wait before restarting a mic watcher that exited.
+const MIC_WATCHER_RESTART_SECS: u64 = 30;
+
+fn start_mic_watcher<R: Runtime>(app: AppHandle<R>) {
+    std::thread::spawn(move || loop {
+        tauri::async_runtime::block_on(watch_mic_once(&app));
+        clear_detected(&app);
+        std::thread::sleep(std::time::Duration::from_secs(MIC_WATCHER_RESTART_SECS));
+    });
+}
+
+/// Run the `watch-mic` sidecar until it exits, feeding its snapshots to the
+/// call detector.
+async fn watch_mic_once<R: Runtime>(app: &AppHandle<R>) {
+    let spawned = app
+        .shell()
+        .sidecar("distil-capture")
+        .map_err(|e| e.to_string())
+        .and_then(|command| {
+            command
+                .args(["watch-mic"])
+                .spawn()
+                .map_err(|e| e.to_string())
+        });
+    // `_child` must outlive the loop: dropping it closes the sidecar's stdin,
+    // which it reads as "the host is gone" and exits.
+    let (mut rx, _child) = match spawned {
+        Ok(parts) => parts,
+        Err(message) => {
+            eprintln!("mic watcher failed to start: {message}");
+            return;
+        }
+    };
+
+    // Stdout arrives in arbitrary chunks, and this stream never ends, so lines
+    // are reassembled rather than assumed whole.
+    let mut lines = meetings::LineBuffer::default();
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                for line in lines.push(&bytes) {
+                    if let Some(users) = meetings::parse_mic_activity(&line) {
+                        handle_mic_snapshot(app, &users);
+                    }
+                }
+            }
+            CommandEvent::Stderr(bytes) => {
+                eprintln!(
+                    "distil-capture watch-mic: {}",
+                    String::from_utf8_lossy(&bytes)
+                );
+            }
+            CommandEvent::Terminated(status) => {
+                eprintln!("mic watcher exited (status {:?})", status.code);
+                break;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn handle_mic_snapshot<R: Runtime>(app: &AppHandle<R>, users: &[meetings::MicUser]) {
+    let (signal, detected_change, calendar_title) = {
+        let handle = app.state::<Mutex<AppState>>();
+        let mut guard = handle.lock().unwrap();
+        let recording = guard.session.is_some();
+        let calendar_meeting = guard.upcoming.is_some();
+        let signal = guard.detector.update(
+            users,
+            recording,
+            calendar_meeting,
+            std::time::Instant::now(),
+        );
+        let detected = guard
+            .detector
+            .current()
+            .filter(|_| guard.detect_meetings)
+            .map(str::to_string);
+        let changed = detected != guard.detected;
+        guard.detected = detected.clone();
+        (
+            signal,
+            changed.then_some(detected),
+            guard.upcoming.as_ref().map(|meeting| meeting.title.clone()),
+        )
+    };
+
+    if let Some(detected) = detected_change {
+        let _ = app.emit("meeting-detected", &detected);
+    }
+    if let Some(signal) = signal {
+        act_on_call_signal(app, signal, calendar_title);
+    }
+}
+
+/// The watcher is gone, so what it last reported is stale: forget it rather
+/// than leave the tray offering a call that may have ended.
+fn clear_detected<R: Runtime>(app: &AppHandle<R>) {
+    let had_detected = {
+        let handle = app.state::<Mutex<AppState>>();
+        let mut guard = handle.lock().unwrap();
+        guard.detector = meetings::Detector::default();
+        guard.detected.take().is_some()
+    };
+    if had_detected {
+        let _ = app.emit("meeting-detected", None::<String>);
+    }
+}
+
+/// Notify about, or act on, a call starting or ending. Settings are read here,
+/// when a signal actually fires, rather than on every 2 s snapshot.
+fn act_on_call_signal<R: Runtime>(
+    app: &AppHandle<R>,
+    signal: meetings::Signal,
+    calendar_title: Option<String>,
+) {
+    let settings = models::load_settings(app);
+    if !settings.detect_meetings {
+        return;
+    }
+    match signal {
+        meetings::Signal::Started { app: call_app } => {
+            let title = calendar_title.unwrap_or_else(|| format!("{call_app} call"));
+            notify(
+                app,
+                &format!("{title} detected"),
+                "Click the Distil menu-bar icon to record it.",
+            );
+        }
+        meetings::Signal::Ended { app: call_app } => {
+            if settings.auto_stop_recording {
+                stop_recording(app);
+                notify(
+                    app,
+                    "Recording stopped",
+                    &format!("The {call_app} call ended, so Distil stopped recording."),
+                );
+            } else {
+                notify(
+                    app,
+                    &format!("The {call_app} call ended"),
+                    "Stop recording? Click the Distil menu-bar icon to stop it.",
+                );
+            }
+        }
+    }
+}
+
 fn show_library<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -620,6 +794,16 @@ fn record_upcoming(app: AppHandle) {
 #[tauri::command]
 fn upcoming_meeting(state: tauri::State<'_, Mutex<AppState>>) -> Option<UpcomingMeeting> {
     state.lock().unwrap().upcoming.clone()
+}
+
+#[tauri::command]
+fn record_detected(app: AppHandle) {
+    record_detected_impl(&app);
+}
+
+#[tauri::command]
+fn detected_call(state: tauri::State<'_, Mutex<AppState>>) -> Option<String> {
+    state.lock().unwrap().detected.clone()
 }
 
 #[tauri::command]
@@ -970,6 +1154,31 @@ fn set_diarize_speakers(app: AppHandle, enable: bool) -> Result<(), String> {
     models::save_settings(&app, &settings)
 }
 
+#[tauri::command]
+fn set_detect_meetings(app: AppHandle, enable: bool) -> Result<(), String> {
+    let mut settings = models::load_settings(&app);
+    settings.detect_meetings = enable;
+    models::save_settings(&app, &settings)?;
+    // Switching off also takes down a call the tray is already offering.
+    let cleared = {
+        let state = app.state::<Mutex<AppState>>();
+        let mut guard = state.lock().unwrap();
+        guard.detect_meetings = enable;
+        !enable && guard.detected.take().is_some()
+    };
+    if cleared {
+        let _ = app.emit("meeting-detected", None::<String>);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_auto_stop_recording(app: AppHandle, enable: bool) -> Result<(), String> {
+    let mut settings = models::load_settings(&app);
+    settings.auto_stop_recording = enable;
+    models::save_settings(&app, &settings)
+}
+
 /// Run the capture helper and return the permissions report it prints.
 async fn capture_permissions(app: &AppHandle, args: &[&str]) -> Result<Value, String> {
     let output = app
@@ -1135,6 +1344,8 @@ pub fn run() {
             toggle_recording,
             record_upcoming,
             upcoming_meeting,
+            record_detected,
+            detected_call,
             recording_elapsed,
             open_meeting,
             open_settings,
@@ -1154,6 +1365,8 @@ pub fn run() {
             set_whisper_model,
             set_keep_audio,
             set_diarize_speakers,
+            set_detect_meetings,
+            set_auto_stop_recording,
             permissions_status,
             request_permission,
             probe_system_audio,
@@ -1188,6 +1401,9 @@ pub fn run() {
                 .build(app)?;
 
             start_calendar_watcher(app.handle().clone());
+            app.state::<Mutex<AppState>>().lock().unwrap().detect_meetings =
+                models::load_settings(app.handle()).detect_meetings;
+            start_mic_watcher(app.handle().clone());
 
             Ok(())
         })

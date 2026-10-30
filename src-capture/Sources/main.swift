@@ -32,10 +32,15 @@ if arguments.contains("calendar") {
     dispatchMain()
 }
 
+if arguments.contains("watch-mic") {
+    MicActivityWatcher.run()
+    dispatchMain()
+}
+
 guard let flagIndex = arguments.firstIndex(of: "--out-dir"), flagIndex + 1 < arguments.count else {
     FileHandle.standardError.write(
         Data(
-            "usage: distil-capture --out-dir <dir> | --check-permissions | --check-system-audio | --request-permission <microphone|calendar>\n"
+            "usage: distil-capture --out-dir <dir> | --check-permissions | --check-system-audio | --request-permission <microphone|calendar> | watch-mic\n"
                 .utf8))
     exit(2)
 }
