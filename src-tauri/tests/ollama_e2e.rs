@@ -18,15 +18,18 @@ fn distils_sample_transcript_with_local_ollama() {
     let model = distil_lib::ollama::auto_pick(URL).expect("ollama running with a local model");
     println!("auto-picked model: {model}");
 
-    let notes = distil_lib::ollama::generate(
+    let notes = distil_lib::llm::generate(
+        distil_lib::llm::Engine::Ollama,
         URL,
         &model,
         &distil_lib::ollama::build_notes_prompt(
             distil_lib::ollama::DEFAULT_NOTES_PROMPT,
             transcript,
         ),
+        false,
     )
-    .expect("generation succeeds");
+    .expect("generation succeeds")
+    .text;
     println!("--- notes ---\n{notes}");
 
     assert!(notes.len() > 40, "notes suspiciously short: {notes:?}");

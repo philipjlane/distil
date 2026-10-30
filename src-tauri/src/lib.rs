@@ -1,5 +1,6 @@
 pub mod calendar;
 pub mod diarize;
+pub mod llm;
 pub mod models;
 pub mod ollama;
 pub mod transcribe;
@@ -256,46 +257,26 @@ fn pipeline_owns_ui<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> bool {
     )
 }
 
-/// Transcript → notes.md via the configured (or best local) Ollama model.
+/// Transcript → notes.md via the configured (or best local) notes model.
 /// Blocking; call while holding PIPELINE_GATE.
 fn distil_core<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> Result<(), String> {
     let transcript = std::fs::read_to_string(dir.join("transcript.md"))
         .map_err(|e| format!("cannot read transcript: {e}"))?;
     let settings = models::load_settings(app);
-    let model = match settings.ollama_model.clone() {
-        Some(model) => {
-            if model.ends_with("-cloud") && !settings.allow_cloud_models {
-                return Err(format!(
-                    "{model} is a cloud model but cloud models are disabled — enable them in Settings or pick a local model"
-                ));
-            }
-            model
-        }
-        None => ollama::auto_pick(&settings.ollama_url)?,
-    };
-    // Attendee names (when the recording came from a calendar prompt) give the
-    // name-inference instruction its candidate set.
-    let attendees: Vec<String> = std::fs::read(dir.join("meta.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|meta| meta.get("attendees").cloned())
-        .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or_default();
-    let transcript = if attendees.is_empty() {
-        transcript
-    } else {
-        format!(
-            "Known attendees (from the calendar invite): {}.\n\n{transcript}",
-            attendees.join(", ")
-        )
-    };
+    let (engine, url, selected) = settings.notes_engine();
+    let model = llm::resolve_model(engine, url, selected)?;
+    llm::check_privacy(engine, url, &model, settings.allow_cloud_models)?;
+    let transcript = ollama::notes_input(&transcript, &ollama::meeting_attendees(dir));
 
     let (template, _) = models::load_notes_prompt(app);
-    let notes = ollama::generate(
-        &settings.ollama_url,
+    let notes = llm::generate(
+        engine,
+        url,
         &model,
         &ollama::build_notes_prompt(&template, &transcript),
-    )?;
+        false,
+    )?
+    .text;
     if notes.is_empty() {
         return Err(format!("{model} returned empty notes"));
     }
@@ -305,6 +286,7 @@ fn distil_core<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> Result<(), String>
     if let Ok(bytes) = std::fs::read(&meta_path) {
         if let Ok(mut meta) = serde_json::from_slice::<Value>(&bytes) {
             meta["ollamaModel"] = Value::from(model);
+            meta["notesEngine"] = serde_json::to_value(engine).unwrap_or_default();
             meta["distilledAt"] = Value::from(chrono::Local::now().to_rfc3339());
             let _ = std::fs::write(
                 &meta_path,
@@ -854,25 +836,25 @@ fn delete_meeting(app: AppHandle, dir: String) -> Result<(), String> {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct OllamaModelInfo {
+struct NotesModelInfo {
     name: String,
     parameter_size: Option<f64>,
     is_cloud: bool,
 }
 
+/// Models on the active engine's server.
 #[tauri::command]
-fn list_ollama_models(app: AppHandle) -> Result<Vec<OllamaModelInfo>, String> {
+fn list_notes_models(app: AppHandle) -> Result<Vec<NotesModelInfo>, String> {
     let settings = models::load_settings(&app);
-    Ok(
-        ollama::list_models(&settings.ollama_url, settings.allow_cloud_models)?
-            .into_iter()
-            .map(|m| OllamaModelInfo {
-                name: m.name,
-                parameter_size: m.parameter_size,
-                is_cloud: m.is_cloud,
-            })
-            .collect(),
-    )
+    let (engine, url, _) = settings.notes_engine();
+    Ok(llm::list_models(engine, url, settings.allow_cloud_models)?
+        .into_iter()
+        .map(|m| NotesModelInfo {
+            name: m.name,
+            parameter_size: m.parameter_size,
+            is_cloud: m.is_cloud,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -891,10 +873,38 @@ fn get_settings(app: AppHandle) -> models::Settings {
     models::load_settings(&app)
 }
 
+/// Sets the notes model for whichever engine is active.
 #[tauri::command]
-fn set_ollama_model(app: AppHandle, model: Option<String>) -> Result<(), String> {
+fn set_notes_model(app: AppHandle, model: Option<String>) -> Result<(), String> {
     let mut settings = models::load_settings(&app);
-    settings.ollama_model = model.filter(|m| !m.is_empty());
+    let model = model.filter(|m| !m.is_empty());
+    match settings.engine {
+        llm::Engine::Ollama => settings.ollama_model = model,
+        llm::Engine::OpenAi => settings.openai_model = model,
+    }
+    models::save_settings(&app, &settings)
+}
+
+/// Switches the notes engine; `openai_url` (when given) replaces the
+/// OpenAI-compatible server address, and clears a model picked on the old one.
+#[tauri::command]
+fn set_notes_engine(
+    app: AppHandle,
+    engine: llm::Engine,
+    openai_url: Option<String>,
+) -> Result<(), String> {
+    let mut settings = models::load_settings(&app);
+    settings.engine = engine;
+    if let Some(url) = openai_url {
+        let url = url.trim().trim_end_matches('/').to_string();
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err("server address must start with http:// or https://".into());
+        }
+        if url != settings.openai_url {
+            settings.openai_url = url;
+            settings.openai_model = None;
+        }
+    }
     models::save_settings(&app, &settings)
 }
 
@@ -1135,9 +1145,10 @@ pub fn run() {
             distil_meeting,
             reveal_meeting,
             delete_meeting,
-            list_ollama_models,
+            list_notes_models,
             get_settings,
-            set_ollama_model,
+            set_notes_model,
+            set_notes_engine,
             set_allow_cloud_models,
             list_whisper_models,
             set_whisper_model,

@@ -10,13 +10,16 @@ type WhisperModel = {
   selected: boolean;
 };
 
-type OllamaModel = { name: string; parameterSize: number | null; isCloud: boolean };
+type NotesModel = { name: string; parameterSize: number | null; isCloud: boolean };
 
 type Settings = {
   whisperModel: string;
   keepAudio: boolean;
   ollamaUrl: string;
   ollamaModel: string | null;
+  engine: "ollama" | "openai";
+  openaiUrl: string;
+  openaiModel: string | null;
   allowCloudModels: boolean;
   diarizeSpeakers: boolean;
 };
@@ -41,14 +44,14 @@ function Switch({ on, onToggle }: { on: boolean; onToggle: (next: boolean) => vo
 
 export function SettingsPane({
   settings,
-  ollamaModels,
-  ollamaError,
+  notesModels,
+  notesError,
   onSettingsChange,
   onReloadModels,
 }: {
   settings: Settings;
-  ollamaModels: OllamaModel[];
-  ollamaError: boolean;
+  notesModels: NotesModel[];
+  notesError: boolean;
   onSettingsChange: (next: Settings) => void;
   onReloadModels: () => void;
 }) {
@@ -58,6 +61,10 @@ export function SettingsPane({
   const [prompt, setPrompt] = useState<NotesPrompt | null>(null);
   const [promptDraft, setPromptDraft] = useState("");
   const [promptSaved, setPromptSaved] = useState(false);
+  const [urlDraft, setUrlDraft] = useState(settings.openaiUrl);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const onServer = settings.engine === "openai";
+  const notesModel = onServer ? settings.openaiModel : settings.ollamaModel;
 
   const refreshPermissions = useCallback(() => {
     invoke<Permissions>("permissions_status")
@@ -88,6 +95,25 @@ export function SettingsPane({
         window.setTimeout(() => setPromptSaved(false), 1500);
       })
       .catch(() => {});
+  };
+
+  const chooseEngine = (engine: Settings["engine"]) => {
+    invoke("set_notes_engine", { engine })
+      .then(onReloadModels)
+      .catch(() => {});
+    onSettingsChange({ ...settings, engine });
+  };
+
+  const commitUrl = () => {
+    const url = urlDraft.trim().replace(/\/+$/, "");
+    if (url === settings.openaiUrl) return;
+    invoke("set_notes_engine", { engine: settings.engine, openaiUrl: url })
+      .then(() => {
+        setUrlError(null);
+        onSettingsChange({ ...settings, openaiUrl: url, openaiModel: null });
+        onReloadModels();
+      })
+      .catch((e) => setUrlError(String(e)));
   };
 
   const granted = (status: string | undefined) => status === "granted";
@@ -215,14 +241,52 @@ export function SettingsPane({
 
       <div className="ui-card section-card">
         <h3 className="app-h2 card-h">Distillation</h3>
-        <p className="card-sub">Notes are written by a local model via Ollama.</p>
-        {ollamaError ? (
+        <p className="card-sub">
+          Notes are written by a local model, via Ollama or any OpenAI-compatible
+          server such as oMLX, mlx-lm, llama.cpp or LM Studio.
+        </p>
+        <div className="ui-select-wrap" style={{ maxWidth: 320, marginBottom: 12 }}>
+          <select
+            className="ui-select"
+            value={settings.engine}
+            onChange={(event) => chooseEngine(event.target.value as Settings["engine"])}
+          >
+            <option value="ollama">Ollama</option>
+            <option value="openai">OpenAI-compatible server</option>
+          </select>
+          <span className="chev">
+            <ChevronDown size={15} strokeWidth={2} />
+          </span>
+        </div>
+        {onServer && (
+          <div style={{ maxWidth: 320, marginBottom: 12 }}>
+            <input
+              className="ui-input"
+              value={urlDraft}
+              placeholder="http://localhost:8080/v1"
+              spellCheck={false}
+              onChange={(event) => setUrlDraft(event.target.value)}
+              onBlur={commitUrl}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") commitUrl();
+              }}
+            />
+            {urlError && (
+              <div className="switch-desc" style={{ marginTop: 6 }}>
+                {urlError}
+              </div>
+            )}
+          </div>
+        )}
+        {notesError ? (
           <div
             className="ui-alert ui-alert-error"
             style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: 12 }}
           >
             <span style={{ fontSize: 13, flex: 1 }}>
-              Ollama isn't reachable — start the Ollama app (or `ollama serve`).
+              {onServer
+                ? `No model server is answering at ${settings.openaiUrl}. Start it, or check the address.`
+                : "Ollama isn't reachable — start the Ollama app (or `ollama serve`)."}{" "}
               Distil keeps checking.
             </span>
             <button className="ui-btn ui-btn-outline ui-btn-sm" onClick={onReloadModels}>
@@ -233,15 +297,21 @@ export function SettingsPane({
           <div className="ui-select-wrap" style={{ maxWidth: 320 }}>
             <select
               className="ui-select"
-              value={settings.ollamaModel ?? ""}
+              value={notesModel ?? ""}
               onChange={(event) => {
                 const model = event.target.value || null;
-                invoke("set_ollama_model", { model }).catch(() => {});
-                onSettingsChange({ ...settings, ollamaModel: model });
+                invoke("set_notes_model", { model }).catch(() => {});
+                onSettingsChange(
+                  onServer
+                    ? { ...settings, openaiModel: model }
+                    : { ...settings, ollamaModel: model },
+                );
               }}
             >
-              <option value="">Auto — largest local model</option>
-              {ollamaModels.map((m) => (
+              <option value="">
+                {onServer ? "Auto (the server's only model)" : "Auto — largest local model"}
+              </option>
+              {notesModels.map((m) => (
                 <option key={m.name} value={m.name}>
                   {m.name}
                   {m.isCloud
@@ -275,11 +345,12 @@ export function SettingsPane({
             }}
           />
           <div className="switch-main">
-            <div className="switch-title">Allow cloud Ollama models</div>
+            <div className="switch-title">Allow cloud models</div>
             <div className="switch-desc">
               Models badged <span className="ui-badge badge-cloud">CLOUD</span> run
-              on Ollama's servers — transcripts sent to them leave this Mac. Never
-              chosen automatically.
+              off this Mac: on Ollama's servers, or on a model server that isn't
+              localhost. Transcripts sent to them leave this Mac. Never chosen
+              automatically.
             </div>
           </div>
         </div>

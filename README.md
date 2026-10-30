@@ -14,7 +14,10 @@ cloud Ollama models.
   speakers-without-headphones setups)
 - **On-device transcription** — whisper.cpp with Metal, models downloaded on first use
 - **Local distillation** — notes written by the largest local Ollama model, or one
-  you pick; cloud models are strictly opt-in and clearly badged
+  you pick; cloud models are strictly opt-in and clearly badged. Any
+  OpenAI-compatible local server (oMLX, mlx-lm, llama.cpp, LM Studio) works too, and
+  [docs/model-eval.md](docs/model-eval.md) compares candidate models on your own
+  meetings
 - **Calendar-aware** — reads your macOS Calendar locally (no OAuth) and offers to
   record when a real meeting is about to start, with the folder pre-named
 - **A real library** — browse meetings, rendered notes/transcripts, copy, reveal in
